@@ -3,21 +3,24 @@
     "version": "0.1.0",
     "type": "module",
     "description": "Wrapper around Actor.pushData that survives dataset schema validation failures by stripping offending fields and retrying. Callers pass the actual push function as pushFn.",
-    "main": "./src/safePushData.js",
+    "main": "./src/safePushData.ts",
     "exports": {
-        ".": "./src/safePushData.js"
+        ".": "./src/safePushData.ts"
     },
     "engines": {
-        "node": ">=18.0.0"
+        "node": ">=22.6.0"
     },
     "scripts": {
-        "test": "node --test test/*.test.mjs",
+        "typecheck": "tsc --noEmit",
+        "test": "node --test --experimental-strip-types test/*.test.ts",
         "check:pushdata": "node scripts/check-pushdata.mjs",
-        "ci": "npm run check:pushdata && npm test",
+        "ci": "npm run typecheck && npm run check:pushdata && npm test",
         "probe": "node scripts/probe-errors.mjs"
     },
     "devDependencies": {
-        "apify-client": "^2.10.0"
+        "@types/node": "^25.9.1",
+        "apify-client": "^2.10.0",
+        "typescript": "^6.0.3"
     },
     "license": "ISC"
 }
