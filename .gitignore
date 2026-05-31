@@ -1,0 +1,9 @@
+node_modules
+apify_storage
+crawlee_storage
+storage
+.DS_Store
+*.log
+.idea
+.vscode
+package-lock.json

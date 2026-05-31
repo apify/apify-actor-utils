@@ -1,0 +1,21 @@
+{
+    "name": "claude-safe-pushdata",
+    "version": "0.1.0",
+    "type": "module",
+    "description": "Wrapper around Actor.pushData that survives dataset schema validation failures by dropping or cleaning offending items and retrying.",
+    "engines": {
+        "node": ">=18.0.0"
+    },
+    "dependencies": {
+        "apify": "^3.7.0"
+    },
+    "devDependencies": {
+        "apify-client": "^2.10.0"
+    },
+    "scripts": {
+        "start": "node ./src/main.js",
+        "probe": "node ./scripts/probe-errors.mjs",
+        "test:local": "node ./scripts/test-locally.mjs"
+    },
+    "license": "ISC"
+}

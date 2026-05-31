@@ -1,0 +1,14 @@
+{
+    "$schema": "https://apify.com/schemas/v1/actor.ide.json",
+    "actorSpecification": 1,
+    "name": "test-actor-safe-pushdata",
+    "title": "Safe pushData demo",
+    "description": "Demonstrates the safePushData wrapper that survives dataset_schema validation failures.",
+    "version": "0.0",
+    "buildTag": "latest",
+    "storages": {
+        "dataset": "./dataset_schema.json"
+    },
+    "input": "./input_schema.json",
+    "dockerfile": "../Dockerfile"
+}
