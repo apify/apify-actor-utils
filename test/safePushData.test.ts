@@ -99,25 +99,185 @@ test('deletes invalid field, then retries successfully', async () => {
     assert.deepEqual(calls[1][1], { name: 'Bob' });
 });
 
-test('drops item when stripping creates a required-field error', async () => {
-    const requiredFields = ['name', 'age'] as const;
+test('placeholders a missing required field, then satisfies the type', async () => {
+    // Schema: { required: ['name'], properties: { name: { type: 'string' } } }
     const validate = (item: Item): ValidationError[] | null => {
         const errors: ValidationError[] = [];
-        for (const f of requiredFields) {
-            if (item?.[f] == null) {
-                errors.push({
-                    instancePath: '',
-                    schemaPath: '#/required',
-                    keyword: 'required',
-                    params: { missingProperty: f },
-                    message: `must have required property '${f}'`,
-                });
-            }
+        if (item?.name === undefined) {
+            errors.push({
+                instancePath: '',
+                schemaPath: '#/required',
+                keyword: 'required',
+                params: { missingProperty: 'name' },
+                message: "must have required property 'name'",
+            });
+        } else if (item.name === null || typeof item.name !== 'string') {
+            errors.push({
+                instancePath: '/name',
+                schemaPath: '#/properties/name/type',
+                keyword: 'type',
+                params: { type: 'string' },
+                message: 'must be string',
+            });
         }
+        return errors.length > 0 ? errors : null;
+    };
+    const { pushFn, calls } = makeMockPush(validate);
+    const res = await safePushData(pushFn, { age: 30 });
+    assert.equal(res.pushed, 1);
+    assert.equal(res.dropped.length, 0);
+    // Final pushed item: name was placeholder'd to null, then upgraded to ''.
+    assert.deepEqual(calls[calls.length - 1][0], { age: 30, name: '' });
+});
+
+test('chases required -> type -> minLength on the same placeholder field', async () => {
+    // Schema: { required: ['name'], properties: { name: { type: 'string', minLength: 3 } } }
+    const validate = (item: Item): ValidationError[] | null => {
+        const errors: ValidationError[] = [];
+        if (item?.name === undefined) {
+            errors.push({
+                instancePath: '',
+                keyword: 'required',
+                params: { missingProperty: 'name' },
+                message: "must have required property 'name'",
+            });
+            return errors;
+        }
+        if (item.name === null || typeof item.name !== 'string') {
+            errors.push({
+                instancePath: '/name',
+                keyword: 'type',
+                params: { type: 'string' },
+                message: 'must be string',
+            });
+            return errors;
+        }
+        if ((item.name as string).length < 3) {
+            errors.push({
+                instancePath: '/name',
+                keyword: 'minLength',
+                params: { limit: 3 },
+                message: 'must NOT have fewer than 3 characters',
+            });
+            return errors;
+        }
+        return null;
+    };
+    const { pushFn, calls } = makeMockPush(validate);
+    const res = await safePushData(pushFn, { age: 30 }, { maxAttempts: 10 });
+    assert.equal(res.pushed, 1);
+    assert.equal(res.attempts, 4); // required, type, minLength, success
+    assert.equal((calls[calls.length - 1][0].name as string).length, 3);
+});
+
+test('placeholder for enum picks the first allowed value', async () => {
+    const validate = (item: Item): ValidationError[] | null => {
+        if (item?.role === undefined) {
+            return [{
+                instancePath: '',
+                keyword: 'required',
+                params: { missingProperty: 'role' },
+                message: "must have required property 'role'",
+            }];
+        }
+        if (item.role === null) {
+            return [{
+                instancePath: '/role',
+                keyword: 'type',
+                params: { type: 'string' },
+                message: 'must be string',
+            }];
+        }
+        const allowed = ['admin', 'user', 'guest'];
+        if (typeof item.role !== 'string' || !allowed.includes(item.role)) {
+            return [{
+                instancePath: '/role',
+                keyword: 'enum',
+                params: { allowedValues: allowed },
+                message: 'must be equal to one of the allowed values',
+            }];
+        }
+        return null;
+    };
+    const { pushFn, calls } = makeMockPush(validate);
+    const res = await safePushData(pushFn, { name: 'x' });
+    assert.equal(res.pushed, 1);
+    assert.equal(calls[calls.length - 1][0].role, 'admin');
+});
+
+test('placeholder for format=email', async () => {
+    const validate = (item: Item): ValidationError[] | null => {
+        if (item?.email === undefined) {
+            return [{
+                instancePath: '',
+                keyword: 'required',
+                params: { missingProperty: 'email' },
+                message: "must have required property 'email'",
+            }];
+        }
+        if (item.email === null) {
+            return [{
+                instancePath: '/email',
+                keyword: 'type',
+                params: { type: 'string' },
+                message: 'must be string',
+            }];
+        }
+        if (typeof item.email === 'string' && !/.+@.+\..+/.test(item.email)) {
+            return [{
+                instancePath: '/email',
+                keyword: 'format',
+                params: { format: 'email' },
+                message: 'must match format "email"',
+            }];
+        }
+        return null;
+    };
+    const { pushFn, calls } = makeMockPush(validate);
+    const res = await safePushData(pushFn, { name: 'x' });
+    assert.equal(res.pushed, 1);
+    assert.equal(calls[calls.length - 1][0].email, 'placeholder@example.com');
+});
+
+test('drops item when a placeholder constraint has no known fix (pattern)', async () => {
+    const validate = (item: Item): ValidationError[] | null => {
+        if (item?.sku === undefined) {
+            return [{
+                instancePath: '',
+                keyword: 'required',
+                params: { missingProperty: 'sku' },
+                message: "must have required property 'sku'",
+            }];
+        }
+        if (item.sku === null) {
+            return [{
+                instancePath: '/sku',
+                keyword: 'type',
+                params: { type: 'string' },
+                message: 'must be string',
+            }];
+        }
+        // We don't have a placeholder for `pattern`, so item should be dropped.
+        return [{
+            instancePath: '/sku',
+            keyword: 'pattern',
+            params: { pattern: '^[A-Z]{3}-\\d{4}$' },
+            message: 'must match pattern',
+        }];
+    };
+    const { pushFn } = makeMockPush(validate);
+    const res = await safePushData(pushFn, [{ name: 'x' }], { maxAttempts: 10 });
+    assert.equal(res.pushed, 0);
+    assert.equal(res.dropped.length, 1);
+});
+
+test('user-supplied bad data still gets the field stripped, not placeholder-treated', async () => {
+    // Schema: name optional but must be string. age optional integer.
+    const validate = (item: Item): ValidationError[] | null => {
+        const errors: ValidationError[] = [];
         if (item?.age != null && typeof item.age !== 'number') {
             errors.push({
                 instancePath: '/age',
-                schemaPath: '#/properties/age/type',
                 keyword: 'type',
                 params: { type: 'integer' },
                 message: 'must be integer',
@@ -125,13 +285,12 @@ test('drops item when stripping creates a required-field error', async () => {
         }
         return errors.length > 0 ? errors : null;
     };
-    const { pushFn } = makeMockPush(validate);
-    const original = [{ name: 'Alice', age: 30 }, { name: 'Bob', age: 'old' }];
-    const res = await safePushData(pushFn, original);
-    // Bob's age gets deleted; next round surfaces "required: age" so he's dropped.
+    const { pushFn, calls } = makeMockPush(validate);
+    const res = await safePushData(pushFn, [{ name: 'Bob', age: 'old' }]);
     assert.equal(res.pushed, 1);
-    assert.equal(res.dropped.length, 1);
-    assert.deepEqual(res.dropped[0].item, { name: 'Bob', age: 'old' });
+    // age was user-supplied (not a placeholder we set), so it got deleted
+    // rather than coerced to 0.
+    assert.deepEqual(calls[calls.length - 1][0], { name: 'Bob' });
 });
 
 test('removes bad element from array via /tags/0 path', async () => {
