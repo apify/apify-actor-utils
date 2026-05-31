@@ -1,16 +1,10 @@
-// Apify SDK is imported lazily inside the default `pushFn` / log path so
-// that this module can be imported (and unit-tested) without it installed.
-// Override `pushFn` / `logger` to bypass the import entirely.
-
 /**
- * Wrapper around Actor.pushData that survives dataset-schema validation
+ * Wrapper around a dataset push call that survives JSON-schema validation
  * failures. The Apify API rejects the *entire* push request when any item
- * in the batch fails JSON-schema validation, which means a single bad row
- * coming from an upstream data source can take the whole batch down.
- *
- * safePushData parses the schema-validation error returned by the API,
- * either drops the offending items or strips the offending fields, then
- * retries with the cleaned batch.
+ * in the batch fails validation, so a single bad row from an upstream
+ * source can take down the whole batch. safePushData parses the schema
+ * error, strips the offending fields (or array elements) from each bad
+ * item, and retries.
  *
  * Error shape returned by the API (ApifyApiError):
  *   {
@@ -19,10 +13,7 @@
  *     message: 'Schema validation failed',
  *     data: {
  *       invalidItems: [
- *         {
- *           itemPosition: <index in submitted array>,
- *           validationErrors: [<AJV error>...]
- *         }
+ *         { itemPosition: <index>, validationErrors: [<AJV error>...] }
  *       ]
  *     }
  *   }
@@ -32,34 +23,15 @@
 
 const SCHEMA_ERROR_TYPE = 'schema-validation-error';
 
-async function defaultLogger() {
-    try {
-        const { log } = await import('apify');
-        return log;
-    } catch {
-        return {
-            warning: (msg) => console.warn(msg),
-            error: (msg) => console.error(msg),
-        };
-    }
-}
-
-/**
- * @param {unknown} err
- * @returns {err is { type: string, statusCode: number, data: { invalidItems: Array<{ itemPosition: number, validationErrors: Array<object> }> } }}
- */
 export function isSchemaValidationError(err) {
     if (!err || typeof err !== 'object') return false;
-    // ApifyApiError exposes both `type` and `statusCode` directly.
     if (err.type !== SCHEMA_ERROR_TYPE) return false;
     if (err.statusCode !== 400) return false;
     return Array.isArray(err.data?.invalidItems);
 }
 
-/**
- * Parse a JSON Pointer (RFC 6901) into an array of decoded path segments.
- * "" -> []; "/foo/bar" -> ["foo", "bar"]; "/tags/0" -> ["tags", "0"].
- */
+// Parse a JSON Pointer (RFC 6901) into decoded segments.
+// "" -> []; "/foo/bar" -> ["foo","bar"]; "/tags/0" -> ["tags","0"].
 function parseJsonPointer(pointer) {
     if (!pointer) return [];
     return pointer
@@ -68,10 +40,7 @@ function parseJsonPointer(pointer) {
         .map((seg) => seg.replace(/~1/g, '/').replace(/~0/g, '~'));
 }
 
-/**
- * Delete the value at `path` inside `obj`. No-op if the path doesn't exist.
- * Arrays: removes the element with splice (shifts later indices).
- */
+// Delete the value at `path` inside `obj`. Arrays: splice the element.
 function deleteAtPath(obj, path) {
     if (path.length === 0) return false;
     let cursor = obj;
@@ -96,45 +65,30 @@ function deleteAtPath(obj, path) {
 }
 
 /**
- * Try to clean a single item given its AJV validation errors.
- *
- * Strategy:
- *  - `required` at root path: the item is missing a required property. We
- *    cannot fabricate it, so the item is unfixable -> return null.
+ * Try to clean a single item given its AJV errors:
+ *  - `required` at root: can't fabricate the value -> null (drop).
  *  - `additionalProperties`: delete the unknown property.
- *  - any other keyword (`type`, `enum`, `minLength`, `format`, ...): delete
- *    the offending field. If the schema later marks that field as required,
- *    a follow-up `required` error will surface on the next attempt and the
- *    item will be dropped then.
+ *  - any other keyword (`type`, `enum`, `minLength`, `format`, ...):
+ *    delete the offending field / array element.
  *
- * Returns the cleaned item or null when the item cannot be salvaged.
+ * Returns the cleaned item or null when unsalvageable.
  */
 function cleanItemFields(item, validationErrors) {
-    // structuredClone keeps us from mutating the caller's data.
     const cloned = structuredClone(item);
 
     for (const err of validationErrors) {
         const path = parseJsonPointer(err.instancePath || '');
 
-        // Errors whose instancePath is the root of the item describe a
-        // problem with the item as a whole. For `required` we have no
-        // way to invent a value, so the item is unsalvageable.
         if (path.length === 0) {
             if (err.keyword === 'required') return null;
             if (err.keyword === 'additionalProperties' && err.params?.additionalProperty) {
                 delete cloned[err.params.additionalProperty];
                 continue;
             }
-            if (err.keyword === 'type') {
-                // The whole item is the wrong type (e.g., not an object). Unfixable.
-                return null;
-            }
-            // Any other root-level keyword we don't recognise -> drop to be safe.
+            if (err.keyword === 'type') return null;
             return null;
         }
 
-        // additionalProperties errors point at the parent object, with the
-        // offending key in params.additionalProperty.
         if (err.keyword === 'additionalProperties' && err.params?.additionalProperty) {
             deleteAtPath(cloned, [...path, err.params.additionalProperty]);
             continue;
@@ -148,81 +102,40 @@ function cleanItemFields(item, validationErrors) {
 
 /**
  * @typedef {object} SafePushDataOptions
- * @property {'drop' | 'cleanFields'} [strategy='drop']
- *   `drop`         - remove invalid items, push the rest.
- *   `cleanFields`  - try to delete offending fields from each invalid item
- *                    and push the cleaned version. Items that can't be
- *                    cleaned (missing required field, wrong root type) are
- *                    still dropped.
+ * @property {(items: Array<unknown>) => Promise<unknown>} pushFn
+ *   Required. Function that actually pushes the batch (e.g.
+ *   `(b) => Actor.pushData(b)` or `(b) => client.dataset(id).pushItems(b)`).
  * @property {number} [maxAttempts=5]
- *   Hard ceiling on retries. The API returns all invalid items in one shot,
- *   so a healthy run resolves in 1 retry; higher values are insurance against
- *   pathological schemas (e.g. fields whose deletion exposes another error).
- * @property {(invalid: Array<{ item: unknown, errors: Array<object> }>) => Promise<void> | void} [onDropped]
- *   Called with the items that ended up being dropped (after cleaning, if
- *   any). Useful for archiving to a side dataset / key-value store.
- * @property {boolean} [silent=false] - suppress logs (overrides logger).
- * @property {(items: Array<unknown>) => Promise<unknown>} [pushFn]
- *   Override the push call. Defaults to `Actor.pushData`. Pass a custom
- *   function to push to a non-default dataset, or for unit testing.
- *   Example: `pushFn: (items) => client.dataset(id).pushItems(items)`.
- * @property {{ warning?: Function, error?: Function }} [logger]
- *   Override the logger. Defaults to Apify SDK's `log` if available, else console.
  */
 
 /**
- * @typedef {object} SafePushDataResult
- * @property {number} pushed   Number of items successfully sent to the dataset.
- * @property {Array<{ item: unknown, errors: Array<object> }>} dropped
- *   Items that could not be pushed (either because the strategy is `drop`
- *   and they were invalid, or because `cleanFields` couldn't fix them).
- * @property {Array<{ item: unknown, errors: Array<object> }>} cleaned
- *   Items that were modified before being pushed (only populated when
- *   strategy === 'cleanFields').
- * @property {number} attempts Number of pushData calls made.
- */
-
-/**
- * Push items to the default dataset, surviving schema validation failures.
+ * Push items to a dataset, surviving schema validation failures by stripping
+ * invalid fields and retrying. Accepts a single item or array.
  *
- * @param {unknown | Array<unknown>} input - single item or array of items.
- * @param {SafePushDataOptions} [options]
- * @returns {Promise<SafePushDataResult>}
+ * The retry loop is necessary: deleting a field to fix a `type`/`enum`/etc.
+ * error can expose a `required` error on the same field on the next push,
+ * which the first response couldn't have told us about. Each round of
+ * cleaning may surface the next layer of errors, so we loop until the push
+ * succeeds, every remaining item is unsalvageable, or maxAttempts is hit.
+ *
+ * Returns { pushed, dropped, attempts }.
  */
-export async function safePushData(input, options = {}) {
-    const {
-        strategy = 'drop',
-        maxAttempts = 5,
-        onDropped,
-        silent = false,
-        pushFn,
-        logger,
-    } = options;
-
-    const effectivePushFn = pushFn ?? (async (batch) => {
-        const { Actor } = await import('apify');
-        return Actor.pushData(batch);
-    });
-    const effectiveLogger = logger ?? (silent ? null : await defaultLogger());
+export async function safePushData(input, options) {
+    const { pushFn, maxAttempts = 5 } = options;
+    if (typeof pushFn !== 'function') {
+        throw new TypeError('safePushData: options.pushFn is required');
+    }
 
     const items = Array.isArray(input) ? [...input] : [input];
     const dropped = [];
-    // `cleaned` records the cumulative AJV errors per original item that we
-    // attempted to clean. Indexed by original-item reference so the same item
-    // cleaned across multiple attempts produces a single entry.
-    const cleanedByOriginal = new Map();
-
-    // We track the items still pending push, plus the original input
-    // they correspond to so we can return useful diagnostics.
     let pending = items.map((item) => ({ original: item, current: item }));
     let attempts = 0;
-
     let pushedCount = 0;
 
     while (pending.length > 0 && attempts < maxAttempts) {
         attempts++;
         try {
-            await effectivePushFn(pending.map((p) => p.current));
+            await pushFn(pending.map((p) => p.current));
             pushedCount = pending.length;
             pending = [];
             break;
@@ -240,63 +153,30 @@ export async function safePushData(input, options = {}) {
                 const validationErrors = errorsByPosition.get(i);
 
                 if (!validationErrors) {
-                    // Item is valid — keep it for the next push.
                     next.push(entry);
                     continue;
                 }
 
-                if (strategy === 'drop') {
-                    dropped.push({ item: entry.original, errors: validationErrors });
-                    continue;
-                }
-
-                // cleanFields strategy
                 const cleanedItem = cleanItemFields(entry.current, validationErrors);
                 if (cleanedItem === null) {
-                    // Could not salvage; if we already counted it as cleaned in
-                    // an earlier round, drop that bookkeeping too — it ended up
-                    // discarded.
-                    cleanedByOriginal.delete(entry.original);
                     dropped.push({ item: entry.original, errors: validationErrors });
                     continue;
                 }
-                const existing = cleanedByOriginal.get(entry.original);
-                cleanedByOriginal.set(entry.original, {
-                    item: entry.original,
-                    errors: existing ? [...existing.errors, ...validationErrors] : [...validationErrors],
-                });
                 next.push({ original: entry.original, current: cleanedItem });
             }
 
-            effectiveLogger?.warning?.(
+            console.log(
                 `safePushData: schema validation failed on attempt ${attempts}: `
                 + `${err.data.invalidItems.length} invalid item(s); `
                 + `retrying with ${next.length} item(s).`,
             );
-
-            // Guard against an infinite loop if cleaning didn't change anything
-            // (shouldn't happen with the above logic, but be defensive).
-            if (next.length === pending.length
-                && next.every((entry, i) => entry.current === pending[i].current)) {
-                effectiveLogger?.error?.('safePushData: no progress after cleaning; aborting.');
-                for (const entry of next) {
-                    dropped.push({
-                        item: entry.original,
-                        errors: errorsByPosition.get(pending.indexOf(entry)) || [],
-                    });
-                }
-                pending = [];
-                break;
-            }
 
             pending = next;
         }
     }
 
     if (pending.length > 0) {
-        // We've exhausted maxAttempts and still have items. They get reported
-        // as dropped so the caller can decide what to do.
-        effectiveLogger?.error?.(
+        console.log(
             `safePushData: gave up after ${attempts} attempts with ${pending.length} item(s) still failing.`,
         );
         for (const entry of pending) {
@@ -304,14 +184,5 @@ export async function safePushData(input, options = {}) {
         }
     }
 
-    if (dropped.length > 0 && onDropped) {
-        await onDropped(dropped);
-    }
-
-    return {
-        pushed: pushedCount,
-        dropped,
-        cleaned: [...cleanedByOriginal.values()],
-        attempts,
-    };
+    return { pushed: pushedCount, dropped, attempts };
 }
