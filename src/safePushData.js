@@ -103,8 +103,11 @@ function cleanItemFields(item, validationErrors) {
 /**
  * @typedef {object} SafePushDataOptions
  * @property {(items: Array<unknown>) => Promise<unknown>} pushFn
- *   Required. Function that actually pushes the batch (e.g.
- *   `(b) => Actor.pushData(b)` or `(b) => client.dataset(id).pushItems(b)`).
+ *   Required. Function that performs the actual push, e.g.
+ *   `(b) => Actor.pushData(b)` or `(b) => client.dataset(id).pushItems(b)`.
+ *   Kept out of this library on purpose: a CI check
+ *   (scripts/check-pushdata.mjs) enforces that `.pushData` never appears in
+ *   this repo, so callers own the binding.
  * @property {number} [maxAttempts=5]
  */
 
