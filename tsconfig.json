@@ -1,20 +1,18 @@
 {
+    "extends": "@apify/tsconfig",
     "compilerOptions": {
+        "declaration": true,
+        "module": "nodenext",
+        "moduleResolution": "nodenext",
         "target": "ES2022",
-        "module": "NodeNext",
-        "moduleResolution": "NodeNext",
-        "allowImportingTsExtensions": true,
+        "outDir": "dist",
+        "noUnusedLocals": false,
         "strict": true,
-        "noUnusedLocals": true,
-        "noUnusedParameters": true,
-        "noImplicitOverride": true,
-        "noFallthroughCasesInSwitch": true,
-        "isolatedModules": true,
-        "verbatimModuleSyntax": true,
+        "esModuleInterop": true,
+        "lib": ["DOM", "es2021"],
         "skipLibCheck": true,
-        "noEmit": true,
-        "lib": ["ES2022", "DOM"],
-        "types": ["node"]
+        "types": ["node"],
+        "importHelpers": false
     },
-    "include": ["src/**/*.ts", "test/**/*.ts"]
+    "include": ["./index.ts", "src/**/*.ts", "test/**/*.ts"]
 }

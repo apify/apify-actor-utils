@@ -1,4 +1,5 @@
 node_modules
+dist
 apify_storage
 crawlee_storage
 storage
@@ -6,4 +7,3 @@ storage
 *.log
 .idea
 .vscode
-package-lock.json

@@ -1,12 +1,8 @@
-// Run: node --test --experimental-strip-types test/safePushData.test.ts
-import test from 'node:test';
+// Run: npm test (builds then runs the compiled suite under node --test)
 import assert from 'node:assert/strict';
-import {
-    safePushData,
-    isSchemaValidationError,
-    type PushFn,
-    type ValidationError,
-} from '../src/safePushData.ts';
+import test from 'node:test';
+
+import { isSchemaValidationError, type PushFn, safePushData, type ValidationError } from '../src/safePushData.js';
 
 // Shape of an item used across tests.
 interface Item {
@@ -18,7 +14,7 @@ interface Item {
 }
 
 // Build a fake ApifyApiError matching the real schema-validation envelope.
-function fakeSchemaError(invalidItems: Array<{ itemPosition: number; validationErrors: ValidationError[] }>) {
+function fakeSchemaError(invalidItems: { itemPosition: number; validationErrors: ValidationError[] }[]) {
     // Cast to attach the ApifyApiError-style fields.
     const err = new Error('Schema validation failed') as Error & {
         type: string;
@@ -39,7 +35,7 @@ function makeMockPush(validate: (item: Item) => ValidationError[] | null) {
     const pushFn: PushFn<Item> = async (batch) => {
         // Snapshot so later mutations don't trip assertions.
         calls.push(batch.map((x) => structuredClone(x)));
-        const invalidItems: Array<{ itemPosition: number; validationErrors: ValidationError[] }> = [];
+        const invalidItems: { itemPosition: number; validationErrors: ValidationError[] }[] = [];
         for (let i = 0; i < batch.length; i++) {
             const errors = validate(batch[i]);
             if (errors && errors.length > 0) invalidItems.push({ itemPosition: i, validationErrors: errors });
@@ -56,10 +52,7 @@ test('isSchemaValidationError recognises the API shape', () => {
         isSchemaValidationError({ type: 'schema-validation-error', statusCode: 400, data: { invalidItems: [] } }),
         true,
     );
-    assert.equal(
-        isSchemaValidationError({ type: 'other', statusCode: 400, data: { invalidItems: [] } }),
-        false,
-    );
+    assert.equal(isSchemaValidationError({ type: 'other', statusCode: 400, data: { invalidItems: [] } }), false);
 });
 
 test('happy path: one push, no allocations beyond the result object', async () => {
@@ -79,21 +72,23 @@ test('happy path: one push, no allocations beyond the result object', async () =
 test('deletes invalid field, then retries successfully', async () => {
     const validate = (item: Item): ValidationError[] | null => {
         if (item?.age != null && typeof item.age !== 'number') {
-            return [{
-                instancePath: '/age',
-                schemaPath: '#/properties/age/type',
-                keyword: 'type',
-                params: { type: 'integer' },
-                message: 'must be integer',
-            }];
+            return [
+                {
+                    instancePath: '/age',
+                    schemaPath: '#/properties/age/type',
+                    keyword: 'type',
+                    params: { type: 'integer' },
+                    message: 'must be integer',
+                },
+            ];
         }
         return null;
     };
     const { pushFn, calls } = makeMockPush(validate);
-    const res = await safePushData(
-        pushFn,
-        [{ name: 'Alice', age: 30 }, { name: 'Bob', age: 'old' }],
-    );
+    const res = await safePushData(pushFn, [
+        { name: 'Alice', age: 30 },
+        { name: 'Bob', age: 'old' },
+    ]);
     assert.equal(res.pushed, 2);
     assert.equal(res.dropped.length, 0);
     assert.deepEqual(calls[1][1], { name: 'Bob' });
@@ -173,29 +168,35 @@ test('chases required -> type -> minLength on the same placeholder field', async
 test('placeholder for enum picks the first allowed value', async () => {
     const validate = (item: Item): ValidationError[] | null => {
         if (item?.role === undefined) {
-            return [{
-                instancePath: '',
-                keyword: 'required',
-                params: { missingProperty: 'role' },
-                message: "must have required property 'role'",
-            }];
+            return [
+                {
+                    instancePath: '',
+                    keyword: 'required',
+                    params: { missingProperty: 'role' },
+                    message: "must have required property 'role'",
+                },
+            ];
         }
         if (item.role === null) {
-            return [{
-                instancePath: '/role',
-                keyword: 'type',
-                params: { type: 'string' },
-                message: 'must be string',
-            }];
+            return [
+                {
+                    instancePath: '/role',
+                    keyword: 'type',
+                    params: { type: 'string' },
+                    message: 'must be string',
+                },
+            ];
         }
         const allowed = ['admin', 'user', 'guest'];
         if (typeof item.role !== 'string' || !allowed.includes(item.role)) {
-            return [{
-                instancePath: '/role',
-                keyword: 'enum',
-                params: { allowedValues: allowed },
-                message: 'must be equal to one of the allowed values',
-            }];
+            return [
+                {
+                    instancePath: '/role',
+                    keyword: 'enum',
+                    params: { allowedValues: allowed },
+                    message: 'must be equal to one of the allowed values',
+                },
+            ];
         }
         return null;
     };
@@ -208,28 +209,34 @@ test('placeholder for enum picks the first allowed value', async () => {
 test('placeholder for format=email', async () => {
     const validate = (item: Item): ValidationError[] | null => {
         if (item?.email === undefined) {
-            return [{
-                instancePath: '',
-                keyword: 'required',
-                params: { missingProperty: 'email' },
-                message: "must have required property 'email'",
-            }];
+            return [
+                {
+                    instancePath: '',
+                    keyword: 'required',
+                    params: { missingProperty: 'email' },
+                    message: "must have required property 'email'",
+                },
+            ];
         }
         if (item.email === null) {
-            return [{
-                instancePath: '/email',
-                keyword: 'type',
-                params: { type: 'string' },
-                message: 'must be string',
-            }];
+            return [
+                {
+                    instancePath: '/email',
+                    keyword: 'type',
+                    params: { type: 'string' },
+                    message: 'must be string',
+                },
+            ];
         }
         if (typeof item.email === 'string' && !/.+@.+\..+/.test(item.email)) {
-            return [{
-                instancePath: '/email',
-                keyword: 'format',
-                params: { format: 'email' },
-                message: 'must match format "email"',
-            }];
+            return [
+                {
+                    instancePath: '/email',
+                    keyword: 'format',
+                    params: { format: 'email' },
+                    message: 'must match format "email"',
+                },
+            ];
         }
         return null;
     };
@@ -242,28 +249,34 @@ test('placeholder for format=email', async () => {
 test('drops item when a placeholder constraint has no known fix (pattern)', async () => {
     const validate = (item: Item): ValidationError[] | null => {
         if (item?.sku === undefined) {
-            return [{
-                instancePath: '',
-                keyword: 'required',
-                params: { missingProperty: 'sku' },
-                message: "must have required property 'sku'",
-            }];
+            return [
+                {
+                    instancePath: '',
+                    keyword: 'required',
+                    params: { missingProperty: 'sku' },
+                    message: "must have required property 'sku'",
+                },
+            ];
         }
         if (item.sku === null) {
-            return [{
-                instancePath: '/sku',
-                keyword: 'type',
-                params: { type: 'string' },
-                message: 'must be string',
-            }];
+            return [
+                {
+                    instancePath: '/sku',
+                    keyword: 'type',
+                    params: { type: 'string' },
+                    message: 'must be string',
+                },
+            ];
         }
         // We don't have a placeholder for `pattern`, so item should be dropped.
-        return [{
-            instancePath: '/sku',
-            keyword: 'pattern',
-            params: { pattern: '^[A-Z]{3}-\\d{4}$' },
-            message: 'must match pattern',
-        }];
+        return [
+            {
+                instancePath: '/sku',
+                keyword: 'pattern',
+                params: { pattern: '^[A-Z]{3}-\\d{4}$' },
+                message: 'must match pattern',
+            },
+        ];
     };
     const { pushFn } = makeMockPush(validate);
     const res = await safePushData(pushFn, [{ name: 'x' }], { maxAttempts: 10 });
@@ -321,13 +334,15 @@ test('removes bad element from array via /tags/0 path', async () => {
 });
 
 test('single object input: dropped on missing-required, no crash', async () => {
-    const { pushFn } = makeMockPush(() => [{
-        instancePath: '',
-        schemaPath: '#/required',
-        keyword: 'required',
-        params: { missingProperty: 'name' },
-        message: "must have required property 'name'",
-    }]);
+    const { pushFn } = makeMockPush(() => [
+        {
+            instancePath: '',
+            schemaPath: '#/required',
+            keyword: 'required',
+            params: { missingProperty: 'name' },
+            message: "must have required property 'name'",
+        },
+    ]);
     const res = await safePushData(pushFn, { age: 99 });
     assert.equal(res.pushed, 0);
     assert.equal(res.dropped.length, 1);
@@ -340,12 +355,14 @@ test('non-schema error is rethrown', async () => {
         err.statusCode = 500;
         throw err;
     };
-    await assert.rejects(() => safePushData(pushFn, [{ x: 1 }]), /boom/);
+    await assert.rejects(async () => safePushData(pushFn, [{ x: 1 }]), /boom/);
 });
 
 test('empty array input: returns immediately (but pushFn is still called once)', async () => {
     let called = 0;
-    const pushFn: PushFn<Item> = async () => { called++; };
+    const pushFn: PushFn<Item> = async () => {
+        called++;
+    };
     const res = await safePushData(pushFn, []);
     assert.equal(res.pushed, 0);
     assert.equal(res.attempts, 1);
@@ -355,9 +372,8 @@ test('empty array input: returns immediately (but pushFn is still called once)',
 });
 
 test('original input array is not mutated', async () => {
-    const validate = (item: Item): ValidationError[] | null => (item?.bad
-        ? [{ instancePath: '/bad', keyword: 'type', params: { type: 'string' }, message: 'x' }]
-        : null);
+    const validate = (item: Item): ValidationError[] | null =>
+        item?.bad ? [{ instancePath: '/bad', keyword: 'type', params: { type: 'string' }, message: 'x' }] : null;
     const { pushFn } = makeMockPush(validate);
     const original: Item[] = [{ name: 'A' }, { name: 'B', bad: true }];
     const snapshot = structuredClone(original);
@@ -372,18 +388,82 @@ test('gives up after maxAttempts with remaining items still failing', async () =
     let calls = 0;
     const pushFn: PushFn<Item> = async (batch) => {
         calls++;
-        throw fakeSchemaError(batch.map((_, i) => ({
-            itemPosition: i,
-            validationErrors: [{
-                instancePath: `/extra${calls}`,
-                keyword: 'type',
-                params: { type: 'string' },
-                message: 'forever-failing',
-            }],
-        })));
+        throw fakeSchemaError(
+            batch.map((_, i) => ({
+                itemPosition: i,
+                validationErrors: [
+                    {
+                        instancePath: `/extra${calls}`,
+                        keyword: 'type',
+                        params: { type: 'string' },
+                        message: 'forever-failing',
+                    },
+                ],
+            })),
+        );
     };
     const res = await safePushData(pushFn, [{ name: 'X' }], { maxAttempts: 3 });
     assert.equal(res.pushed, 0);
     assert.equal(res.dropped.length, 1);
     assert.equal(res.attempts, 3);
+});
+
+test('give-up drop reports the last validation errors, not an empty array', async () => {
+    let calls = 0;
+    const pushFn: PushFn<Item> = async (batch) => {
+        calls++;
+        throw fakeSchemaError(
+            batch.map((_, i) => ({
+                itemPosition: i,
+                validationErrors: [
+                    {
+                        instancePath: `/extra${calls}`,
+                        keyword: 'type',
+                        params: { type: 'string' },
+                        message: 'forever-failing',
+                    },
+                ],
+            })),
+        );
+    };
+    const res = await safePushData(pushFn, [{ name: 'X' }], { maxAttempts: 3 });
+    assert.equal(res.dropped.length, 1);
+    assert.deepEqual(res.dropped[0].errors, [
+        { instancePath: '/extra3', keyword: 'type', params: { type: 'string' }, message: 'forever-failing' },
+    ]);
+});
+
+test('maxAttempts <= 0 is clamped to 1 (attempts always matches real pushFn calls)', async () => {
+    let calls = 0;
+    const pushFn: PushFn<Item> = async () => {
+        calls++;
+        throw fakeSchemaError([
+            {
+                itemPosition: 0,
+                validationErrors: [
+                    { instancePath: '', keyword: 'required', params: { missingProperty: 'name' }, message: 'nope' },
+                ],
+            },
+        ]);
+    };
+    const res = await safePushData(pushFn, [{ age: 30 }], { maxAttempts: 0 });
+    assert.equal(calls, 1);
+    assert.equal(res.attempts, 1);
+});
+
+test('out-of-range itemPosition in the error payload is ignored, not a crash', async () => {
+    const pushFn: PushFn<Item> = async () => {
+        throw fakeSchemaError([
+            {
+                itemPosition: 5,
+                validationErrors: [
+                    { instancePath: '', keyword: 'required', params: { missingProperty: 'name' }, message: 'nope' },
+                ],
+            },
+        ]);
+    };
+    const res = await safePushData(pushFn, [{ age: 30 }], { maxAttempts: 2 });
+    assert.equal(res.pushed, 0);
+    assert.equal(res.dropped.length, 1);
+    assert.deepEqual(res.dropped[0].item, { age: 30 });
 });

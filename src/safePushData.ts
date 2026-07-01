@@ -79,7 +79,9 @@ export async function safePushData<T>(
         return { pushed: items.length, dropped: [], attempts: 1 };
     } catch (err) {
         if (!isSchemaValidationError(err)) throw err;
-        return cleanAndRetry(pushFn, items, err, options.maxAttempts ?? 5);
+        // Clamp to >=1: the initial push above always counts as one attempt,
+        // so 0/negative would make the reported `attempts` lie about it.
+        return cleanAndRetry(pushFn, items, err, Math.max(1, options.maxAttempts ?? 5));
     }
 }
 
@@ -103,6 +105,10 @@ async function cleanAndRetry<T>(
     // without looping forever; for user-supplied fields the existing
     // "delete the field" behaviour stays in effect.
     const placeholderPaths: Set<string>[] = originalItems.map(() => new Set<string>());
+    // Parallel to `working`. The validation errors that were last reported
+    // for this position — kept so a give-up drop (maxAttempts exceeded) can
+    // still report *why*, not just that it gave up.
+    const lastErrorsAt: ValidationError[][] = originalItems.map(() => []);
     const dropped: DroppedItem<T>[] = [];
     let attempts = 1;
     let lastError: SchemaValidationError = initialError;
@@ -110,27 +116,34 @@ async function cleanAndRetry<T>(
     while (true) {
         // Process this round's errors. Highest position first so the splices
         // below don't shift positions we still need to look at.
-        const invalids = lastError.data.invalidItems
-            .slice()
-            .sort((a, b) => b.itemPosition - a.itemPosition);
+        const invalids = lastError.data.invalidItems.slice().sort((a, b) => b.itemPosition - a.itemPosition);
 
         for (const invalid of invalids) {
             const i = invalid.itemPosition;
+            // Guard against a malformed/unexpected error payload (e.g. a
+            // position outside the batch we actually sent) instead of
+            // crashing on `working[i]` being undefined.
+            if (i < 0 || i >= working.length) {
+                console.log(`safePushData: ignoring out-of-range itemPosition ${i} in validation error response.`);
+                continue;
+            }
             const cleaned = cleanItemFields(working[i], invalid.validationErrors, placeholderPaths[i]);
             if (cleaned === null) {
                 dropped.push({ item: originalAt[i], errors: invalid.validationErrors });
                 working.splice(i, 1);
                 originalAt.splice(i, 1);
                 placeholderPaths.splice(i, 1);
+                lastErrorsAt.splice(i, 1);
             } else {
                 working[i] = cleaned;
+                lastErrorsAt[i] = invalid.validationErrors;
             }
         }
 
         console.log(
-            `safePushData: schema validation failed on attempt ${attempts}: `
-            + `${lastError.data.invalidItems.length} invalid item(s); `
-            + `retrying with ${working.length} item(s).`,
+            `safePushData: schema validation failed on attempt ${attempts}: ` +
+                `${lastError.data.invalidItems.length} invalid item(s); ` +
+                `retrying with ${working.length} item(s).`,
         );
 
         if (working.length === 0) {
@@ -143,7 +156,7 @@ async function cleanAndRetry<T>(
                 `safePushData: gave up after ${maxAttempts} attempts with ${working.length} item(s) still failing.`,
             );
             for (let i = 0; i < working.length; i++) {
-                dropped.push({ item: originalAt[i], errors: [] });
+                dropped.push({ item: originalAt[i], errors: lastErrorsAt[i] });
             }
             return { pushed: originalItems.length - dropped.length, dropped, attempts: maxAttempts };
         }
@@ -163,11 +176,7 @@ async function cleanAndRetry<T>(
 //
 // Mutates `placeholderPaths` to record any fields we filled in ourselves,
 // so the caller can keep iterating on them across rounds.
-function cleanItemFields<T>(
-    item: T,
-    validationErrors: ValidationError[],
-    placeholderPaths: Set<string>,
-): T | null {
+function cleanItemFields<T>(item: T, validationErrors: ValidationError[], placeholderPaths: Set<string>): T | null {
     // structuredClone so we never mutate the caller's data.
     const cloned = structuredClone(item) as T;
 
@@ -234,13 +243,21 @@ function placeholderFor(err: ValidationError): { ok: true; value: unknown } | { 
             // params.type is the expected type as a string, or array of strings.
             const t = Array.isArray(params.type) ? params.type[0] : params.type;
             switch (t) {
-                case 'string': return { ok: true, value: '' };
+                case 'string':
+                    return { ok: true, value: '' };
                 case 'integer':
-                case 'number': return { ok: true, value: 0 };
-                case 'boolean': return { ok: true, value: false };
-                case 'array': return { ok: true, value: [] };
-                case 'object': return { ok: true, value: {} };
-                case 'null': return { ok: true, value: null };
+                case 'number':
+                    return { ok: true, value: 0 };
+                case 'boolean':
+                    return { ok: true, value: false };
+                case 'array':
+                    return { ok: true, value: [] };
+                case 'object':
+                    return { ok: true, value: {} };
+                case 'null':
+                    return { ok: true, value: null };
+                default:
+                    break;
             }
             return { ok: false };
         }
@@ -248,7 +265,8 @@ function placeholderFor(err: ValidationError): { ok: true; value: unknown } | { 
             const limit = Number(params.limit) || 1;
             return { ok: true, value: '_'.repeat(limit) };
         }
-        case 'maxLength': return { ok: true, value: '' };
+        case 'maxLength':
+            return { ok: true, value: '' };
         case 'minimum':
         case 'exclusiveMinimum': {
             const limit = Number(params.limit);
@@ -268,16 +286,25 @@ function placeholderFor(err: ValidationError): { ok: true; value: unknown } | { 
         }
         case 'format': {
             switch (params.format) {
-                case 'email': return { ok: true, value: 'placeholder@example.com' };
+                case 'email':
+                    return { ok: true, value: 'placeholder@example.com' };
                 case 'uri':
                 case 'uri-reference':
-                case 'url': return { ok: true, value: 'about:blank' };
-                case 'date': return { ok: true, value: '1970-01-01' };
-                case 'date-time': return { ok: true, value: '1970-01-01T00:00:00Z' };
-                case 'uuid': return { ok: true, value: '00000000-0000-0000-0000-000000000000' };
+                case 'url':
+                    return { ok: true, value: 'about:blank' };
+                case 'date':
+                    return { ok: true, value: '1970-01-01' };
+                case 'date-time':
+                    return { ok: true, value: '1970-01-01T00:00:00Z' };
+                case 'uuid':
+                    return { ok: true, value: '00000000-0000-0000-0000-000000000000' };
+                default:
+                    break;
             }
             return { ok: false };
         }
+        default:
+            break;
     }
     return { ok: false };
 }

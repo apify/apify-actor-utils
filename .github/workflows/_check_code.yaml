@@ -1,0 +1,68 @@
+name: Code checks
+
+on:
+    workflow_call:
+
+permissions:
+    contents: read
+
+jobs:
+    actions_lint_check:
+        name: Actions lint check
+        runs-on: ubuntu-latest
+        steps:
+            - name: Checkout repository
+              uses: actions/checkout@v6
+            - name: Run actionlint
+              uses: rhysd/actionlint@v1.7.11
+
+    lint_check:
+        name: Lint check
+        runs-on: ubuntu-latest
+        steps:
+            - name: Checkout repository
+              uses: actions/checkout@v6
+            - name: Use Node.js
+              uses: actions/setup-node@v6
+              with:
+                  node-version: 24
+                  cache: 'npm'
+                  cache-dependency-path: 'package-lock.json'
+            - name: Install dependencies
+              run: npm ci
+            - name: Lint
+              run: npm run lint
+
+    type_check:
+        name: Type check
+        runs-on: ubuntu-latest
+        steps:
+            - name: Checkout repository
+              uses: actions/checkout@v6
+            - name: Use Node.js
+              uses: actions/setup-node@v6
+              with:
+                  node-version: 24
+                  cache: 'npm'
+                  cache-dependency-path: 'package-lock.json'
+            - name: Install dependencies
+              run: npm ci
+            - name: Type check
+              run: npm run typecheck
+
+    build:
+        name: Build
+        runs-on: ubuntu-latest
+        steps:
+            - name: Checkout repository
+              uses: actions/checkout@v6
+            - name: Use Node.js
+              uses: actions/setup-node@v6
+              with:
+                  node-version: 24
+                  cache: 'npm'
+                  cache-dependency-path: 'package-lock.json'
+            - name: Install dependencies
+              run: npm ci
+            - name: Build
+              run: npm run build
