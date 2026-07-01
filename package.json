@@ -1,26 +1,63 @@
 {
-    "name": "claude-safe-pushdata",
+    "name": "apify-actor-utils",
     "version": "0.1.0",
     "type": "module",
-    "description": "Wrapper around Actor.pushData that survives dataset schema validation failures by stripping offending fields and retrying. Callers pass the actual push function as pushFn.",
-    "main": "./src/safePushData.ts",
-    "exports": {
-        ".": "./src/safePushData.ts"
+    "description": "Wrapper around Actor.pushData that survives dataset schema-validation failures by stripping offending fields and retrying. Callers pass the actual push function as pushFn.",
+    "repository": {
+        "type": "git",
+        "url": "https://github.com/apify-projects/apify-actor-utils.git"
     },
     "engines": {
         "node": ">=22.6.0"
     },
+    "types": "./dist/index.d.ts",
+    "main": "./dist/index.js",
+    "exports": {
+        ".": {
+            "types": "./dist/index.d.ts",
+            "default": "./dist/index.js"
+        }
+    },
+    "files": [
+        "dist/index.js",
+        "dist/index.js.map",
+        "dist/index.d.ts",
+        "dist/index.d.ts.map",
+        "dist/src"
+    ],
     "scripts": {
+        "build": "tsc",
         "typecheck": "tsc --noEmit",
-        "test": "node --test --experimental-strip-types test/*.test.ts",
+        "lint": "eslint",
+        "lint:fix": "eslint --fix",
+        "format": "prettier --write .",
+        "format:check": "prettier --check .",
+        "test": "tsc && node --test dist/test/*.test.js",
         "check:pushdata": "node scripts/check-pushdata.mjs",
-        "ci": "npm run typecheck && npm run check:pushdata && npm test",
-        "probe": "node scripts/probe-errors.mjs"
+        "check-unused": "knip",
+        "ci": "npm run typecheck && npm run lint && npm run format:check && npm run check:pushdata && npm test",
+        "probe": "node scripts/probe-errors.mjs",
+        "prepare": "husky .husky || true"
+    },
+    "lint-staged": {
+        "*.js": "eslint",
+        "*.ts": "eslint",
+        "*.mjs": "eslint"
     },
     "devDependencies": {
+        "@apify/eslint-config": "^1.2.0",
+        "@apify/tsconfig": "^0.1.2",
         "@types/node": "^25.9.1",
         "apify-client": "^2.10.0",
-        "typescript": "^6.0.3"
+        "eslint": "^9.39.4",
+        "eslint-config-prettier": "^10.1.8",
+        "globals": "^17.7.0",
+        "husky": "^9.1.7",
+        "knip": "^5.88.1",
+        "lint-staged": "^15.5.2",
+        "prettier": "^3.9.4",
+        "typescript": "^6.0.3",
+        "typescript-eslint": "^8.62.1"
     },
     "license": "ISC"
 }

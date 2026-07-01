@@ -10,14 +10,11 @@ parses the validation error, strips the offending fields, and retries.
 
 ```ts
 import { Actor } from 'apify';
-import { safePushData } from 'claude-safe-pushdata';
+import { safePushData } from 'apify-actor-utils';
 
 await Actor.init();
 
-const result = await safePushData(
-    (batch) => Actor.pushData(batch),
-    items,
-);
+const result = await safePushData((batch) => Actor.pushData(batch), items);
 
 console.log(result);
 // { pushed: 2, dropped: [...], attempts: 2 }
@@ -39,33 +36,33 @@ working state needed to clean and retry.
 When the push fails with a `schema-validation-error`, the wrapper inspects
 every AJV error per item:
 
-| Error                                              | Action                                                                            |
-| -------------------------------------------------- | --------------------------------------------------------------------------------- |
-| `required` at the root                             | Set the missing field to `null` and mark the path as a placeholder.               |
-| `additionalProperties` at the root                 | Delete the unknown property.                                                      |
-| `type` / `format` / etc. at the root               | Item itself is the wrong shape → dropped.                                         |
-| Constraint on a **placeholder** path               | Replace with a type-aware default (see below). If no default is known → dropped.  |
-| Constraint on **user-supplied** data               | Delete the field. If the schema later marks it required, a placeholder takes over.|
+| Error                                | Action                                                                             |
+| ------------------------------------ | ---------------------------------------------------------------------------------- |
+| `required` at the root               | Set the missing field to `null` and mark the path as a placeholder.                |
+| `additionalProperties` at the root   | Delete the unknown property.                                                       |
+| `type` / `format` / etc. at the root | Item itself is the wrong shape → dropped.                                          |
+| Constraint on a **placeholder** path | Replace with a type-aware default (see below). If no default is known → dropped.   |
+| Constraint on **user-supplied** data | Delete the field. If the schema later marks it required, a placeholder takes over. |
 
 ### Placeholder defaults
 
 When a constraint fires on a path we placeholder'd ourselves, the wrapper
 picks a value that should satisfy it:
 
-| AJV keyword                                  | Placeholder value                                  |
-| -------------------------------------------- | -------------------------------------------------- |
-| `type: string`                               | `''`                                               |
-| `type: integer` / `number`                   | `0`                                                |
-| `type: boolean`                              | `false`                                            |
-| `type: array`                                | `[]`                                               |
-| `type: object`                               | `{}`                                               |
-| `type: null`                                 | `null`                                             |
-| `minLength: N` / `maxLength`                 | `'_'.repeat(N)` / `''`                             |
-| `minimum: N` / `maximum`                     | `N`                                                |
-| `exclusiveMinimum: N` / `exclusiveMaximum`   | `N + 1` / `N - 1`                                  |
-| `enum`                                       | First allowed value                                |
-| `format: email` / `uri` / `date` / `date-time` / `uuid` | a static valid example for each                |
-| Anything else (`pattern`, custom formats…)   | Item is dropped.                                   |
+| AJV keyword                                             | Placeholder value               |
+| ------------------------------------------------------- | ------------------------------- |
+| `type: string`                                          | `''`                            |
+| `type: integer` / `number`                              | `0`                             |
+| `type: boolean`                                         | `false`                         |
+| `type: array`                                           | `[]`                            |
+| `type: object`                                          | `{}`                            |
+| `type: null`                                            | `null`                          |
+| `minLength: N` / `maxLength`                            | `'_'.repeat(N)` / `''`          |
+| `minimum: N` / `maximum`                                | `N`                             |
+| `exclusiveMinimum: N` / `exclusiveMaximum`              | `N + 1` / `N - 1`               |
+| `enum`                                                  | First allowed value             |
+| `format: email` / `uri` / `date` / `date-time` / `uuid` | a static valid example for each |
+| Anything else (`pattern`, custom formats…)              | Item is dropped.                |
 
 The retry loop chases one layer of errors per round
 (`required` → `type` → `minLength` → push) until either the push succeeds
@@ -73,9 +70,9 @@ or `maxAttempts` (default 5) is hit.
 
 ## Options
 
-| Option         | Type                                         | Default | Notes                                                  |
-| -------------- | -------------------------------------------- | ------- | ------------------------------------------------------ |
-| `maxAttempts`  | `number`                                     | `5`     | Hard cap on retries.                                   |
+| Option        | Type     | Default | Notes                |
+| ------------- | -------- | ------- | -------------------- |
+| `maxAttempts` | `number` | `5`     | Hard cap on retries. |
 
 ## Return shape
 
@@ -89,21 +86,24 @@ interface SafePushDataResult<T> {
 
 ## CI
 
-Run `npm run ci` (typecheck + push-data guard + tests). Highlights:
+Run `npm run ci` (typecheck + lint + format check + push-data guard + tests).
+Highlights:
 
 - `scripts/check-pushdata.mjs` greps `src/` and `test/` for any
   `.pushData(` call expression and fails if one exists.
-- Tests run via Node 22.6+ `--experimental-strip-types`, no compile step.
+- The package is consumed as compiled output (`dist/`), so `npm test`
+  builds via `tsc` first, then runs the compiled suite under `node --test`.
 
 ## Layout
 
 ```
 .
-├── src/safePushData.ts          # the library
-├── test/safePushData.test.ts    # node:test suite
+├── index.ts                      # package entry point, re-exports src/
+├── src/safePushData.ts           # the library
+├── test/safePushData.test.ts     # node:test suite
 ├── scripts/
-│   ├── check-pushdata.mjs       # CI guard against direct .pushData() calls
-│   └── probe-errors.mjs         # reference: re-derive the API error shape
+│   ├── check-pushdata.mjs        # CI guard against direct .pushData() calls
+│   └── probe-errors.mjs          # reference: re-derive the API error shape
 ├── tsconfig.json
 └── package.json
 ```

@@ -1,0 +1,10 @@
+echo "pre-commit: typechecking, linting, testing, checking code formatting & pushdata guard"
+
+npm test
+npm run format:check
+npm run check:pushdata
+# We typecheck & lint last when we know our code works
+npx tsc --noEmit
+npx lint-staged
+
+echo "pre-commit: passed"

@@ -7,11 +7,12 @@
 //
 // Usage:
 //   APIFY_TOKEN=... DATASET_ID=<schema-bound-dataset> node scripts/probe-errors.mjs
-import { ApifyClient } from 'apify-client';
 import { writeFileSync } from 'node:fs';
 
+import { ApifyClient } from 'apify-client';
+
 const TOKEN = process.env.APIFY_TOKEN;
-const DATASET_ID = process.env.DATASET_ID;
+const { DATASET_ID } = process.env;
 if (!TOKEN || !DATASET_ID) {
     console.error('Set APIFY_TOKEN and DATASET_ID env vars first.');
     process.exit(1);
@@ -31,19 +32,11 @@ const cases = [
     },
     {
         name: 'array-mixed (1 valid, 2 invalid)',
-        items: [
-            { name: 'Valid', age: 25 },
-            { age: 99 },
-            { name: '', age: -1 },
-        ],
+        items: [{ name: 'Valid', age: 25 }, { age: 99 }, { name: '', age: -1 }],
     },
     {
         name: 'array-all-invalid',
-        items: [
-            { age: 30 },
-            { name: 123, age: 'old' },
-            { name: 'X', age: 200 },
-        ],
+        items: [{ age: 30 }, { name: 123, age: 'old' }, { name: 'X', age: 200 }],
     },
     {
         name: 'array-tags-wrong-type',
