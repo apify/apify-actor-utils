@@ -1,5 +1,5 @@
 {
-    "name": "apify-actor-utils",
+    "name": "@apify/actor-utils",
     "version": "0.1.0",
     "type": "module",
     "description": "Wrapper around Actor.pushData that survives dataset schema-validation failures by stripping offending fields and retrying. Callers pass the actual push function as pushFn.",
