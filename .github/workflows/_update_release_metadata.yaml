@@ -1,0 +1,85 @@
+name: Update release metadata
+
+on:
+    workflow_call:
+        inputs:
+            release_type:
+                description: Release type
+                type: string
+                default: auto
+            custom_version:
+                description: The custom version to bump to (only for "custom" type)
+                type: string
+                default: ''
+        outputs:
+            version_number:
+                description: The version number for the release
+                value: ${{ jobs.release_metadata.outputs.version_number }}
+            tag_name:
+                description: The tag name for the release
+                value: ${{ jobs.release_metadata.outputs.tag_name }}
+            changelog:
+                description: The full changelog content
+                value: ${{ jobs.release_metadata.outputs.changelog }}
+            release_notes:
+                description: The release notes for this version
+                value: ${{ jobs.release_metadata.outputs.release_notes }}
+            changelog_commitish:
+                description: The commit SHA after changelog update
+                value: ${{ jobs.update_changelog.outputs.changelog_commitish }}
+
+permissions:
+    contents: write
+
+jobs:
+    release_metadata:
+        name: Prepare release metadata
+        runs-on: ubuntu-latest
+        outputs:
+            version_number: ${{ steps.release_metadata.outputs.version_number }}
+            tag_name: ${{ steps.release_metadata.outputs.tag_name }}
+            changelog: ${{ steps.release_metadata.outputs.changelog }}
+            release_notes: ${{ steps.release_metadata.outputs.release_notes }}
+        steps:
+            - uses: apify/actions/git-cliff-release@v1.1.2
+              name: Prepare release metadata
+              id: release_metadata
+              with:
+                  release_type: ${{ inputs.release_type }}
+                  custom_version: ${{ inputs.custom_version }}
+                  existing_changelog_path: CHANGELOG.md
+                  token: ${{ secrets.APIFY_SERVICE_ACCOUNT_GITHUB_TOKEN }}
+
+    update_changelog:
+        needs: [release_metadata]
+        name: Update changelog
+        runs-on: ubuntu-latest
+        outputs:
+            changelog_commitish: ${{ steps.commit.outputs.commit_long_sha }}
+        steps:
+            - name: Checkout repository
+              uses: actions/checkout@v6
+              with:
+                  token: ${{ secrets.APIFY_SERVICE_ACCOUNT_GITHUB_TOKEN }}
+
+            - name: Use Node.js
+              uses: actions/setup-node@v6
+              with:
+                  node-version: 24
+
+            - name: Update package version
+              run: npm version --no-git-tag-version --allow-same-version ${{ needs.release_metadata.outputs.version_number }}
+
+            - name: Update changelog
+              uses: DamianReeves/write-file-action@master
+              with:
+                  path: CHANGELOG.md
+                  write-mode: overwrite
+                  contents: ${{ needs.release_metadata.outputs.changelog }}
+
+            - name: Commit changes
+              id: commit
+              uses: apify/actions/signed-commit@v1.0.0
+              with:
+                  message: 'chore(release): Update changelog and package version [skip ci]'
+                  github-token: ${{ secrets.APIFY_SERVICE_ACCOUNT_GITHUB_TOKEN }}

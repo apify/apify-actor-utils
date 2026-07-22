@@ -1,0 +1,53 @@
+name: NPM publish
+
+on:
+    workflow_dispatch:
+        inputs:
+            ref:
+                description: Git ref to publish (branch, tag, or commit SHA)
+                required: true
+                type: string
+            tag:
+                description: NPM dist-tag
+                required: true
+                type: choice
+                default: latest
+                options:
+                    - latest
+                    - beta
+
+permissions:
+    id-token: write
+    contents: read
+
+jobs:
+    npm_publish:
+        name: NPM publish
+        runs-on: ubuntu-latest
+        steps:
+            - name: Checkout repository
+              uses: actions/checkout@v6
+              with:
+                  ref: ${{ inputs.ref }}
+            - name: Use Node.js
+              uses: actions/setup-node@v6
+              with:
+                  node-version: 24
+                  registry-url: 'https://registry.npmjs.org'
+                  cache: 'npm'
+                  cache-dependency-path: 'package-lock.json'
+            - name: Update npm
+              # Pin to npm 11: npm 12.0.0 ships a broken `libnpmpublish` that requires the
+              # top-level `sigstore` module without bundling it, breaking `npm publish --provenance`.
+              run: npm install -g npm@11
+            - name: Install dependencies
+              run: npm ci
+            - name: Bump pre-release version
+              if: ${{ inputs.tag == 'beta' }}
+              run: node ./.github/scripts/before-beta-release.js
+            - name: Build
+              run: npm run build
+            - name: Publish
+              run: npm publish --provenance --tag ${{ inputs.tag }}
+              env:
+                  NODE_AUTH_TOKEN: ${{ secrets.APIFY_SERVICE_ACCOUNT_NPM_TOKEN }}

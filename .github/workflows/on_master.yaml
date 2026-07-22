@@ -4,9 +4,16 @@ on:
     push:
         branches:
             - master
+        tags-ignore:
+            - '**'
+
+concurrency:
+    group: release
+    cancel-in-progress: false
 
 permissions:
     contents: read
+    actions: write
 
 jobs:
     code_checks:
@@ -14,5 +21,38 @@ jobs:
         uses: ./.github/workflows/_check_code.yaml
 
     tests:
+        if: "!startsWith(github.event.head_commit.message, 'docs')"
         name: Tests
         uses: ./.github/workflows/_tests.yaml
+
+    release_metadata:
+        if: >-
+            startsWith(github.event.head_commit.message, 'feat') ||
+            startsWith(github.event.head_commit.message, 'fix') ||
+            startsWith(github.event.head_commit.message, 'perf') ||
+            startsWith(github.event.head_commit.message, 'refactor') ||
+            startsWith(github.event.head_commit.message, 'chore') ||
+            startsWith(github.event.head_commit.message, 'style')
+        name: Update pre-release metadata
+        needs: [code_checks, tests]
+        permissions:
+            contents: write
+        uses: ./.github/workflows/_update_release_metadata.yaml
+        secrets: inherit
+        with:
+            release_type: prerelease
+
+    npm_publish:
+        name: NPM publish
+        needs: [release_metadata]
+        runs-on: ubuntu-latest
+        steps:
+            - name: Execute publish workflow
+              uses: apify/actions/execute-workflow@v1.1.2
+              with:
+                  workflow: manual_publish_to_npm.yaml
+                  inputs: >
+                      {
+                          "ref": "${{ needs.release_metadata.outputs.changelog_commitish }}",
+                          "tag": "beta"
+                      }
