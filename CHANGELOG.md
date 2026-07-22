@@ -2,8 +2,4 @@
 
 All notable changes to this project will be documented in this file.
 
-<!-- git-cliff-unreleased-start -->
-## 0.1.1 - **not yet released**
-
-
-<!-- git-cliff-unreleased-end -->
+## [0.1.1](https://github.com/apify/apify-actor-utils/releases/tag/v0.1.1) (2026-07-22)
