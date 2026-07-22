@@ -5,7 +5,7 @@
     "description": "Wrapper around Actor.pushData that survives dataset schema-validation failures by stripping offending fields and retrying. Callers pass the actual push function as pushFn.",
     "repository": {
         "type": "git",
-        "url": "https://github.com/apify-projects/apify-actor-utils.git"
+        "url": "https://github.com/apify/apify-actor-utils.git"
     },
     "engines": {
         "node": ">=22.6.0"
