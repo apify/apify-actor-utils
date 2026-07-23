@@ -47,25 +47,30 @@ every AJV error per item:
 ### Placeholder defaults
 
 When a constraint fires on a path we placeholder'd ourselves, the wrapper
-picks a value that should satisfy it:
+picks a value that should satisfy it. We deliberately only fill in the four
+**empty** values below — they're unambiguously empty and can't be mistaken
+for real data:
 
-| AJV keyword                                             | Placeholder value               |
-| ------------------------------------------------------- | ------------------------------- |
-| `type: string`                                          | `''`                            |
-| `type: integer` / `number`                              | `0`                             |
-| `type: boolean`                                         | `false`                         |
-| `type: array`                                           | `[]`                            |
-| `type: object`                                          | `{}`                            |
-| `type: null`                                            | `null`                          |
-| `minLength: N` / `maxLength`                            | `'_'.repeat(N)` / `''`          |
-| `minimum: N` / `maximum`                                | `N`                             |
-| `exclusiveMinimum: N` / `exclusiveMaximum`              | `N + 1` / `N - 1`               |
-| `enum`                                                  | First allowed value             |
-| `format: email` / `uri` / `date` / `date-time` / `uuid` | a static valid example for each |
-| Anything else (`pattern`, custom formats…)              | Item is dropped.                |
+| AJV keyword    | Placeholder value |
+| -------------- | ----------------- |
+| `type: string` | `''`              |
+| `type: array`  | `[]`              |
+| `type: object` | `{}`              |
+| `type: null`   | `null`            |
+| Anything else  | Item is dropped.  |
+
+When a field allows **multiple types** (e.g. `['string', 'null']`), the
+wrapper always picks `null` — it's the cleanest placeholder because it
+commits to no concrete value at all.
+
+Everything else (`enum`, `format`, `minLength`, numeric bounds, `type:
+integer` / `number` / `boolean`, …) is **not** placeholdered: a made-up
+email, a first-enum-value, or a fabricated number would silently poison the
+customer's dataset with plausible-looking junk, so the item is dropped
+instead.
 
 The retry loop chases one layer of errors per round
-(`required` → `type` → `minLength` → push) until either the push succeeds
+(`required` → `type` → push) until either the push succeeds
 or `maxAttempts` (default 5) is hit.
 
 ## Options

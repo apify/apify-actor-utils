@@ -125,8 +125,11 @@ test('placeholders a missing required field, then satisfies the type', async () 
     assert.deepEqual(calls[calls.length - 1][0], { age: 30, name: '' });
 });
 
-test('chases required -> type -> minLength on the same placeholder field', async () => {
+test('drops item when a placeholder field carries a minLength it cannot satisfy', async () => {
     // Schema: { required: ['name'], properties: { name: { type: 'string', minLength: 3 } } }
+    // We placeholder name to '' (type: string), but we no longer fabricate a
+    // `'_'.repeat(N)` string for minLength — a made-up string is customer-data
+    // poison — so the item is dropped instead.
     const validate = (item: Item): ValidationError[] | null => {
         const errors: ValidationError[] = [];
         if (item?.name === undefined) {
@@ -158,14 +161,17 @@ test('chases required -> type -> minLength on the same placeholder field', async
         }
         return null;
     };
-    const { pushFn, calls } = makeMockPush(validate);
+    const { pushFn } = makeMockPush(validate);
     const res = await safePushData(pushFn, { age: 30 }, { maxAttempts: 10 });
-    assert.equal(res.pushed, 1);
-    assert.equal(res.attempts, 4); // required, type, minLength, success
-    assert.equal((calls[calls.length - 1][0].name as string).length, 3);
+    assert.equal(res.pushed, 0);
+    assert.equal(res.dropped.length, 1);
+    assert.deepEqual(res.dropped[0].item, { age: 30 });
 });
 
-test('placeholder for enum picks the first allowed value', async () => {
+test('drops item on enum constraint instead of fabricating the first allowed value', async () => {
+    // We used to placeholder an enum field with its first allowed value; that
+    // silently injects a plausible-but-wrong value into the dataset, so we now
+    // drop the item instead.
     const validate = (item: Item): ValidationError[] | null => {
         if (item?.role === undefined) {
             return [
@@ -200,13 +206,15 @@ test('placeholder for enum picks the first allowed value', async () => {
         }
         return null;
     };
-    const { pushFn, calls } = makeMockPush(validate);
-    const res = await safePushData(pushFn, { name: 'x' });
-    assert.equal(res.pushed, 1);
-    assert.equal(calls[calls.length - 1][0].role, 'admin');
+    const { pushFn } = makeMockPush(validate);
+    const res = await safePushData(pushFn, { name: 'x' }, { maxAttempts: 10 });
+    assert.equal(res.pushed, 0);
+    assert.equal(res.dropped.length, 1);
 });
 
-test('placeholder for format=email', async () => {
+test('drops item on format=email instead of fabricating a fake address', async () => {
+    // A made-up `placeholder@example.com` is exactly the kind of junk we no
+    // longer inject; the item is dropped instead.
     const validate = (item: Item): ValidationError[] | null => {
         if (item?.email === undefined) {
             return [
@@ -240,10 +248,45 @@ test('placeholder for format=email', async () => {
         }
         return null;
     };
+    const { pushFn } = makeMockPush(validate);
+    const res = await safePushData(pushFn, { name: 'x' }, { maxAttempts: 10 });
+    assert.equal(res.pushed, 0);
+    assert.equal(res.dropped.length, 1);
+});
+
+test('required field with a union type that allows null is placeholder-filled with null', async () => {
+    // Schema: { required: ['note'], properties: { note: { type: ['string', 'null'] } } }
+    // The initial `required` placeholder sets note = null; because the field
+    // allows null, the follow-up type error reports both allowed types and we
+    // keep null (the cleanest placeholder) rather than coercing to ''.
+    const validate = (item: Item): ValidationError[] | null => {
+        if (!('note' in (item ?? {}))) {
+            return [
+                {
+                    instancePath: '',
+                    keyword: 'required',
+                    params: { missingProperty: 'note' },
+                    message: "must have required property 'note'",
+                },
+            ];
+        }
+        if (item.note !== null && typeof item.note !== 'string') {
+            return [
+                {
+                    instancePath: '/note',
+                    keyword: 'type',
+                    params: { type: ['string', 'null'] },
+                    message: 'must be string,null',
+                },
+            ];
+        }
+        return null;
+    };
     const { pushFn, calls } = makeMockPush(validate);
     const res = await safePushData(pushFn, { name: 'x' });
     assert.equal(res.pushed, 1);
-    assert.equal(calls[calls.length - 1][0].email, 'placeholder@example.com');
+    assert.equal(res.dropped.length, 0);
+    assert.deepEqual(calls[calls.length - 1][0], { name: 'x', note: null });
 });
 
 test('drops item when a placeholder constraint has no known fix (pattern)', async () => {
