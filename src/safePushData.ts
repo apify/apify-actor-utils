@@ -1,6 +1,13 @@
 // safePushData: parse the Apify dataset schema-validation error, repair the
 // offending items (strip bad fields, placeholder missing required ones), and
 // retry the push.
+//
+// NOTE: instead of recursively healing the data one error-round at a time, we
+// could parse the Actor's `dataset_schema.json` up front and fix every item in
+// a single pass (we'd know each field's expected type / constraints without
+// waiting for the API to report them). That would avoid the multi-round retry
+// loop, but requires heavier code (locating + loading the schema, resolving
+// $refs, walking the schema tree). Something to consider in the future.
 
 const SCHEMA_ERROR_TYPE = 'schema-validation-error';
 
@@ -234,77 +241,48 @@ function cleanItemFields<T>(item: T, validationErrors: ValidationError[], placeh
 }
 
 // Pick a value that will satisfy `err.keyword` on a placeholder field.
-// Returns ok:false when we don't have a sensible default (e.g. `pattern`,
-// custom formats); the caller drops the item in that case.
+// Returns ok:false when we don't have a sensible default; the caller drops
+// the item in that case.
+//
+// We deliberately only placeholder the four "empty" values — `''`, `[]`, `{}`,
+// and `null`. These are unambiguously empty and can't be mistaken for real
+// data. We do NOT fabricate values for `enum`, `format`, `minLength`, numeric
+// bounds, etc.: a made-up email, a first-enum-value, or a `'_'.repeat(N)`
+// string all silently poison the customer's dataset with plausible-looking
+// junk. Better to drop the item than to lie about its contents. As a result
+// the only keyword we handle is `type` (only for those four target types) —
+// everything else falls through to ok:false and the item is dropped.
 function placeholderFor(err: ValidationError): { ok: true; value: unknown } | { ok: false } {
     const params = err.params ?? {};
-    switch (err.keyword) {
-        case 'type': {
-            // params.type is the expected type as a string, or array of strings.
-            const t = Array.isArray(params.type) ? params.type[0] : params.type;
-            switch (t) {
-                case 'string':
-                    return { ok: true, value: '' };
-                case 'integer':
-                case 'number':
-                    return { ok: true, value: 0 };
-                case 'boolean':
-                    return { ok: true, value: false };
-                case 'array':
-                    return { ok: true, value: [] };
-                case 'object':
-                    return { ok: true, value: {} };
-                case 'null':
-                    return { ok: true, value: null };
-                default:
-                    break;
-            }
-            return { ok: false };
+    if (err.keyword !== 'type') return { ok: false };
+
+    // params.type is the expected type as a string, or an array of strings
+    // when the field allows multiple types (e.g. `['string', 'null']`).
+    const types = Array.isArray(params.type) ? params.type : [params.type];
+
+    // Union type that permits null: prefer null. It's the cleanest possible
+    // placeholder — it commits to no concrete value at all — so whenever the
+    // schema allows it, that's what we use.
+    if (types.length > 1 && types.includes('null')) {
+        return { ok: true, value: null };
+    }
+
+    // Otherwise take the first allowed type we have an "empty" default for.
+    // integer / number / boolean are intentionally absent: 0 / false read as
+    // real data, so a field of only those types is dropped instead.
+    for (const t of types) {
+        switch (t) {
+            case 'null':
+                return { ok: true, value: null };
+            case 'string':
+                return { ok: true, value: '' };
+            case 'array':
+                return { ok: true, value: [] };
+            case 'object':
+                return { ok: true, value: {} };
+            default:
+                break;
         }
-        case 'minLength': {
-            const limit = Number(params.limit) || 1;
-            return { ok: true, value: '_'.repeat(limit) };
-        }
-        case 'maxLength':
-            return { ok: true, value: '' };
-        case 'minimum':
-        case 'exclusiveMinimum': {
-            const limit = Number(params.limit);
-            if (!Number.isFinite(limit)) return { ok: false };
-            return { ok: true, value: err.keyword === 'exclusiveMinimum' ? limit + 1 : limit };
-        }
-        case 'maximum':
-        case 'exclusiveMaximum': {
-            const limit = Number(params.limit);
-            if (!Number.isFinite(limit)) return { ok: false };
-            return { ok: true, value: err.keyword === 'exclusiveMaximum' ? limit - 1 : limit };
-        }
-        case 'enum': {
-            const allowed = params.allowedValues;
-            if (Array.isArray(allowed) && allowed.length > 0) return { ok: true, value: allowed[0] };
-            return { ok: false };
-        }
-        case 'format': {
-            switch (params.format) {
-                case 'email':
-                    return { ok: true, value: 'placeholder@example.com' };
-                case 'uri':
-                case 'uri-reference':
-                case 'url':
-                    return { ok: true, value: 'about:blank' };
-                case 'date':
-                    return { ok: true, value: '1970-01-01' };
-                case 'date-time':
-                    return { ok: true, value: '1970-01-01T00:00:00Z' };
-                case 'uuid':
-                    return { ok: true, value: '00000000-0000-0000-0000-000000000000' };
-                default:
-                    break;
-            }
-            return { ok: false };
-        }
-        default:
-            break;
     }
     return { ok: false };
 }
