@@ -17,12 +17,19 @@ await Actor.init();
 const result = await safePushData((batch) => Actor.pushData(batch), items);
 
 console.log(result);
-// { pushed: 2, dropped: [...], attempts: 2 }
+// { pushedCount: 2, droppedItems: [...], attemptCount: 2, pushResult: undefined }
 ```
 
 Accepts a single item or an array. `pushFn` is the first positional arg
 and is required — the library itself never imports the Apify SDK, and a
 CI check forbids `.pushData(` from appearing anywhere in the source.
+
+Whatever `pushFn` resolves to comes back as `pushResult`, so a push
+function with a meaningful return value stays usable:
+
+```ts
+const { pushResult } = await safePushData((batch) => client.dataset(id).pushItems(batch), items);
+```
 
 ## Performance notes
 
@@ -38,11 +45,12 @@ every AJV error per item:
 
 | Error                                | Action                                                                             |
 | ------------------------------------ | ---------------------------------------------------------------------------------- |
-| `required` at the root               | Set the missing field to `null` and mark the path as a placeholder.                |
-| `additionalProperties` at the root   | Delete the unknown property.                                                       |
+| `required` (at any depth)            | Set the missing field to `null` and mark the path as a placeholder.                |
+| `additionalProperties` (any depth)   | Delete the unknown property.                                                       |
 | `type` / `format` / etc. at the root | Item itself is the wrong shape → dropped.                                          |
 | Constraint on a **placeholder** path | Replace with a type-aware default (see below). If no default is known → dropped.   |
 | Constraint on **user-supplied** data | Delete the field. If the schema later marks it required, a placeholder takes over. |
+| Nothing on the item was actionable   | Item is dropped — an unchanged item would fail identically on the next push.       |
 
 ### Placeholder defaults
 
@@ -73,14 +81,23 @@ The retry loop chases one layer of errors per round
 (`required` → `type` → push) until either the push succeeds
 or `maxAttempts` (default 5) is hit.
 
+### When the attempt cap is hit
+
+Items still failing on the last allowed attempt are dropped — but the rest
+of the batch is **not** lost with them. Because a rejected push stores
+nothing at all, the wrapper drops the incurable items and then makes one
+final push with the survivors, which the API already validated in the
+previous round. That final push is counted in `attemptCount`, so a run that
+exhausts `maxAttempts: 5` can report `attemptCount: 6`.
+
 ## Logging
 
 Every failed round logs which fields went wrong, so you can fix the schema
-(or the scraper) without digging through the returned `dropped` items:
+(or the scraper) without digging through the returned `droppedItems`:
 
 ```
 safePushData: schema validation failed on attempt 1: 12 invalid item(s); repaired fields: /age (type), /name (required), /tags/[] (type); dropped 2 item(s) on unfixable fields: /email (format); retrying with 10 item(s).
-safePushData: gave up after 5 attempts with 3 item(s) still failing on fields: /sku (pattern).
+safePushData: gave up after 5 attempts; dropped 3 item(s) still failing on fields: /sku (pattern); pushing the 9 valid item(s) left.
 ```
 
 The field list is a **set**, not a per-item breakdown — one bad field
@@ -91,17 +108,25 @@ capped at 20 entries with the rest reported as `(+N more)`.
 
 ## Options
 
-| Option        | Type     | Default | Notes                |
-| ------------- | -------- | ------- | -------------------- |
-| `maxAttempts` | `number` | `5`     | Hard cap on retries. |
+| Option        | Type     | Default | Notes                                                          |
+| ------------- | -------- | ------- | -------------------------------------------------------------- |
+| `maxAttempts` | `number` | `5`     | Cap on repair rounds, plus the final salvage push if it's hit. |
 
 ## Return shape
 
+Names say what they hold: `*Count` is a number, `*Items` is an array of
+objects.
+
 ```ts
-interface SafePushDataResult<T> {
-    pushed: number;
-    dropped: { item: T; errors: ValidationError[] }[];
-    attempts: number;
+interface SafePushDataResult<T, R = unknown> {
+    /** How many of the caller's items made it into the dataset. */
+    pushedCount: number;
+    /** The items we couldn't repair, each with the errors that doomed it. */
+    droppedItems: { item: T; errors: ValidationError[] }[];
+    /** How many times `pushFn` was actually called. */
+    attemptCount: number;
+    /** What the successful `pushFn` call resolved to; absent if none did. */
+    pushResult?: R;
 }
 ```
 

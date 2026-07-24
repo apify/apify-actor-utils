@@ -16,6 +16,10 @@ const SCHEMA_ERROR_TYPE = 'schema-validation-error';
 // summarised as a count instead of flooding the Actor log.
 const MAX_LOGGED_FIELDS = 20;
 
+// Shared empty error list. Positions that validated fine in the current round
+// point at this instead of allocating a fresh array each time.
+const NO_ERRORS: ValidationError[] = [];
+
 // One AJV error in the API response. The keyword + instancePath pair tells
 // us what's wrong and where; params holds keyword-specific extras
 // (e.g. { missingProperty: 'name' } for `required`).
@@ -55,17 +59,27 @@ export interface DroppedItem<T> {
     errors: ValidationError[];
 }
 
-export interface SafePushDataResult<T> {
-    pushed: number;
-    dropped: DroppedItem<T>[];
-    attempts: number;
+// Field names say what they hold: `*Count` is a number, `*Items` is an array
+// of objects. `R` is whatever the caller's push function resolves to.
+export interface SafePushDataResult<T, R = unknown> {
+    /** How many of the caller's items made it into the dataset. */
+    pushedCount: number;
+    /** The items we couldn't repair, each with the errors that doomed it. */
+    droppedItems: DroppedItem<T>[];
+    /** How many times `pushFn` was actually called. */
+    attemptCount: number;
+    /**
+     * What the successful `pushFn` call resolved to (e.g. the API response).
+     * Absent when no push ever succeeded — i.e. when every item was dropped.
+     */
+    pushResult?: R;
 }
 
 export interface SafePushDataOptions {
     maxAttempts?: number;
 }
 
-export type PushFn<T> = (items: T[]) => Promise<unknown>;
+export type PushFn<T, R = unknown> = (items: T[]) => Promise<R>;
 
 /**
  * Push `input` via `pushFn`, surviving Apify dataset schema-validation
@@ -75,34 +89,36 @@ export type PushFn<T> = (items: T[]) => Promise<unknown>;
  * direct `.pushData()` calls in this library, so the binding lives at the
  * call site: `(b) => Actor.pushData(b)` or
  * `(b) => client.dataset(id).pushItems(b)`.
+ *
+ * Whatever `pushFn` resolves to is handed back untouched as `pushResult`.
  */
-export async function safePushData<T>(
-    pushFn: PushFn<T>,
+export async function safePushData<T, R = unknown>(
+    pushFn: PushFn<T, R>,
     input: T | T[],
     options: SafePushDataOptions = {},
-): Promise<SafePushDataResult<T>> {
+): Promise<SafePushDataResult<T, R>> {
     const items = Array.isArray(input) ? input : [input];
 
     // Happy path: assume validation will succeed (the overwhelmingly common
     // case). No working copies, no maps, no per-item wrapper objects — just
     // hand the caller's array to pushFn and return on success.
     try {
-        await pushFn(items);
-        return { pushed: items.length, dropped: [], attempts: 1 };
+        const pushResult = await pushFn(items);
+        return { pushedCount: items.length, droppedItems: [], attemptCount: 1, pushResult };
     } catch (err) {
         if (!isSchemaValidationError(err)) throw err;
         // Clamp to >=1: the initial push above always counts as one attempt,
-        // so 0/negative would make the reported `attempts` lie about it.
+        // so 0/negative would make the reported `attemptCount` lie about it.
         return cleanAndRetry(pushFn, items, err, Math.max(1, options.maxAttempts ?? 5));
     }
 }
 
-async function cleanAndRetry<T>(
-    pushFn: PushFn<T>,
+async function cleanAndRetry<T, R>(
+    pushFn: PushFn<T, R>,
     originalItems: readonly T[],
     initialError: SchemaValidationError,
     maxAttempts: number,
-): Promise<SafePushDataResult<T>> {
+): Promise<SafePushDataResult<T, R>> {
     // working[i] is what we'll send on the next push. We mutate this array
     // in place (splicing drops, replacing cleaned entries); the caller's
     // `originalItems` is never touched.
@@ -117,24 +133,46 @@ async function cleanAndRetry<T>(
     // without looping forever; for user-supplied fields the existing
     // "delete the field" behaviour stays in effect.
     const placeholderPaths: Set<string>[] = originalItems.map(() => new Set<string>());
-    // Parallel to `working`. The validation errors that were last reported
-    // for this position — kept so a give-up drop (maxAttempts exceeded) can
-    // still report *why*, not just that it gave up.
-    const lastErrorsAt: ValidationError[][] = originalItems.map(() => []);
+    // Parallel to `working`. The errors the API reported for this position in
+    // the *current* round, reset every round. Non-empty therefore means "still
+    // failing right now", which is what decides who gets dropped when we run
+    // out of attempts — and it gives that drop a reason to report.
+    const roundErrors: ValidationError[][] = originalItems.map(() => NO_ERRORS);
     const dropped: DroppedItem<T>[] = [];
     let attempts = 1;
     let lastError: SchemaValidationError = initialError;
+
+    // Remove position `i` from every parallel array and record why it went.
+    const dropAt = (i: number, errors: ValidationError[]): void => {
+        dropped.push({ item: originalAt[i], errors });
+        working.splice(i, 1);
+        originalAt.splice(i, 1);
+        placeholderPaths.splice(i, 1);
+        roundErrors.splice(i, 1);
+    };
+
+    // Every return path below either follows a successful push or has dropped
+    // everything that isn't in it, so "original minus dropped" is exactly what
+    // landed. (A rejected push stores nothing at all — not even the items the
+    // API found no fault with.)
+    const result = (attemptCount: number, pushResult?: R): SafePushDataResult<T, R> => ({
+        pushedCount: originalItems.length - dropped.length,
+        droppedItems: dropped,
+        attemptCount,
+        pushResult,
+    });
 
     while (true) {
         // Process this round's errors. Highest position first so the splices
         // below don't shift positions we still need to look at.
         const invalids = lastError.data.invalidItems.slice().sort((a, b) => b.itemPosition - a.itemPosition);
+        roundErrors.fill(NO_ERRORS);
 
         // Which fields went wrong this round, across every failing item. We
         // deliberately don't track which item had which problem — with more
         // than one bad item that detail is noise, and the field set is what
         // actually tells you what to fix in the schema or the scraper.
-        const cleanedFields = new Set<string>();
+        const repairedFields = new Set<string>();
         const droppedFields = new Set<string>();
         let droppedThisRound = 0;
 
@@ -149,51 +187,77 @@ async function cleanAndRetry<T>(
             }
             const cleaned = cleanItemFields(working[i], invalid.validationErrors, placeholderPaths[i]);
             if (cleaned === null) {
-                dropped.push({ item: originalAt[i], errors: invalid.validationErrors });
-                droppedThisRound++;
                 collectFieldIssues(invalid.validationErrors, droppedFields);
-                working.splice(i, 1);
-                originalAt.splice(i, 1);
-                placeholderPaths.splice(i, 1);
-                lastErrorsAt.splice(i, 1);
+                droppedThisRound++;
+                dropAt(i, invalid.validationErrors);
             } else {
                 working[i] = cleaned;
-                lastErrorsAt[i] = invalid.validationErrors;
-                collectFieldIssues(invalid.validationErrors, cleanedFields);
+                roundErrors[i] = invalid.validationErrors;
+                collectFieldIssues(invalid.validationErrors, repairedFields);
             }
         }
 
         const report = [
             `safePushData: schema validation failed on attempt ${attempts}: ${lastError.data.invalidItems.length} invalid item(s)`,
         ];
-        if (cleanedFields.size > 0) report.push(`repaired fields: ${formatFields(cleanedFields)}`);
+        if (repairedFields.size > 0) report.push(`repaired fields: ${formatFields(repairedFields)}`);
         if (droppedThisRound > 0) {
             report.push(`dropped ${droppedThisRound} item(s) on unfixable fields: ${formatFields(droppedFields)}`);
         }
-        report.push(working.length > 0 ? `retrying with ${working.length} item(s).` : 'nothing left to retry.');
+        if (working.length === 0) report.push('nothing left to retry.');
+        else if (attempts < maxAttempts) report.push(`retrying with ${working.length} item(s).`);
+        else report.push(`attempt cap reached with ${working.length} item(s) left.`);
         console.log(report.join('; '));
 
-        if (working.length === 0) {
-            return { pushed: originalItems.length - dropped.length, dropped, attempts };
-        }
+        if (working.length === 0) return result(attempts);
 
         attempts++;
         if (attempts > maxAttempts) {
+            // Out of repair rounds. Drop what's still failing — but a rejected
+            // push stores *nothing*, so keeping the rest in the batch would
+            // throw away perfectly valid items along with the bad ones. Give
+            // the survivors one clean push of their own instead. They were
+            // validated in the round above and left untouched since, so this
+            // push is expected to go through.
             const unresolvedFields = new Set<string>();
-            for (const errors of lastErrorsAt) collectFieldIssues(errors, unresolvedFields);
-            const on = unresolvedFields.size > 0 ? ` on fields: ${formatFields(unresolvedFields)}` : '';
-            console.log(
-                `safePushData: gave up after ${maxAttempts} attempts with ${working.length} item(s) still failing${on}.`,
-            );
-            for (let i = 0; i < working.length; i++) {
-                dropped.push({ item: originalAt[i], errors: lastErrorsAt[i] });
+            let unresolved = 0;
+            for (let i = working.length - 1; i >= 0; i--) {
+                if (roundErrors[i].length === 0) continue;
+                collectFieldIssues(roundErrors[i], unresolvedFields);
+                unresolved++;
+                dropAt(i, roundErrors[i]);
             }
-            return { pushed: originalItems.length - dropped.length, dropped, attempts: maxAttempts };
+            const giveUp = [`safePushData: gave up after ${maxAttempts} attempts`];
+            if (unresolved > 0) {
+                giveUp.push(`dropped ${unresolved} item(s) still failing on fields: ${formatFields(unresolvedFields)}`);
+            }
+            giveUp.push(
+                working.length > 0 ? `pushing the ${working.length} valid item(s) left.` : 'nothing to salvage.',
+            );
+            console.log(giveUp.join('; '));
+
+            if (working.length === 0) return result(maxAttempts);
+
+            try {
+                const pushResult = await pushFn(working);
+                return result(attempts, pushResult);
+            } catch (err) {
+                if (!isSchemaValidationError(err)) throw err;
+                // Even the survivors were rejected, so nothing landed. Report
+                // each one with whatever the API said about it this time.
+                const errorsAt = new Map<number, ValidationError[]>();
+                for (const invalid of err.data.invalidItems) {
+                    errorsAt.set(invalid.itemPosition, invalid.validationErrors);
+                }
+                console.log(`safePushData: final push of ${working.length} item(s) was rejected too; dropping them.`);
+                for (let i = working.length - 1; i >= 0; i--) dropAt(i, errorsAt.get(i) ?? NO_ERRORS);
+                return result(attempts);
+            }
         }
 
         try {
-            await pushFn(working);
-            return { pushed: originalItems.length - dropped.length, dropped, attempts };
+            const pushResult = await pushFn(working);
+            return result(attempts, pushResult);
         } catch (err) {
             if (!isSchemaValidationError(err)) throw err;
             lastError = err;
@@ -214,12 +278,13 @@ function collectFieldIssues(validationErrors: readonly ValidationError[], into: 
 // and name the offending key in params, so we re-attach it — otherwise a
 // missing top-level field would log as the useless `(item root)`.
 function fieldIssueLabel(err: ValidationError): string {
-    const parent = err.instancePath || '';
     const child = offendingKey(err.params);
+    const parent = err.instancePath || '';
     const path = child === undefined ? parent : `${parent}/${escapeJsonPointerSegment(child)}`;
     return `${path === '' ? '(item root)' : collapseArrayIndices(path)} (${err.keyword})`;
 }
 
+// The key an error blames when instancePath points at its parent.
 function offendingKey(params: Record<string, unknown> | undefined): string | undefined {
     if (typeof params?.missingProperty === 'string') return params.missingProperty;
     if (typeof params?.additionalProperty === 'string') return params.additionalProperty;
@@ -233,10 +298,6 @@ function collapseArrayIndices(path: string): string {
     return path.replace(/\/\d+(?=\/|$)/g, '/[]');
 }
 
-function escapeJsonPointerSegment(segment: string): string {
-    return segment.replace(/~/g, '~0').replace(/\//g, '~1');
-}
-
 // Render a field-issue set as a stable, bounded, comma-separated list.
 function formatFields(fields: ReadonlySet<string>): string {
     const sorted = [...fields].sort();
@@ -246,65 +307,93 @@ function formatFields(fields: ReadonlySet<string>): string {
 }
 
 // Try to repair a single item given its AJV errors. Returns null when the
-// item can't be salvaged.
+// item can't be salvaged — including when none of its errors turned out to
+// be actionable, since re-pushing an unchanged item would just reproduce the
+// same errors and burn the remaining attempts.
 //
 // Mutates `placeholderPaths` to record any fields we filled in ourselves,
 // so the caller can keep iterating on them across rounds.
 function cleanItemFields<T>(item: T, validationErrors: ValidationError[], placeholderPaths: Set<string>): T | null {
     // structuredClone so we never mutate the caller's data.
     const cloned = structuredClone(item) as T;
+    let changed = false;
 
-    for (const err of validationErrors) {
+    for (const err of sortForRepair(validationErrors)) {
         const instancePath = err.instancePath || '';
         const path = parseJsonPointer(instancePath);
 
-        // Root-level errors describe the item as a whole.
-        if (path.length === 0) {
-            // Missing required field: insert a placeholder and remember we
-            // did so. The next round will see a `type` error on this path
-            // and we'll upgrade null to a type-appropriate value.
-            if (err.keyword === 'required' && typeof err.params?.missingProperty === 'string') {
-                const prop = err.params.missingProperty;
-                (cloned as Record<string, unknown>)[prop] = null;
-                placeholderPaths.add(`/${prop}`);
-                continue;
+        // Missing required field: insert a placeholder and remember we did
+        // so. The next round will see a `type` error on this path and we'll
+        // upgrade null to a type-appropriate value. The property is named in
+        // params — instancePath points at the object that's missing it, which
+        // may be the item root or any object nested inside it.
+        if (err.keyword === 'required' && typeof err.params?.missingProperty === 'string') {
+            const target = [...path, err.params.missingProperty];
+            if (setAtPath(cloned, target, null)) {
+                placeholderPaths.add(toJsonPointer(target));
+                changed = true;
             }
-            // Strip an unknown property reported at the root.
-            if (err.keyword === 'additionalProperties' && typeof err.params?.additionalProperty === 'string') {
-                delete (cloned as Record<string, unknown>)[err.params.additionalProperty];
-                continue;
-            }
-            // type/format/etc. at the root means the item itself is the wrong shape.
-            return null;
+            continue;
         }
+
+        // Unknown property: also named in params, with instancePath pointing
+        // at its parent. Strip it.
+        if (err.keyword === 'additionalProperties' && typeof err.params?.additionalProperty === 'string') {
+            if (deleteAtPath(cloned, [...path, err.params.additionalProperty])) changed = true;
+            continue;
+        }
+
+        // Any other error at the root means the item itself is the wrong
+        // shape (wrong type, failed `anyOf`, …) — there's no field to strip.
+        if (path.length === 0) return null;
 
         // Errors on a path we placeholder'd: try to satisfy the constraint
         // rather than delete the field (deleting would re-trigger required).
         if (placeholderPaths.has(instancePath)) {
             const fix = placeholderFor(err);
-            if (fix.ok) {
-                setAtPath(cloned, path, fix.value);
-                continue;
+            if (!fix.ok) {
+                // Constraint we don't know how to satisfy on a placeholder
+                // field (e.g. pattern, custom format). Give up on this item.
+                return null;
             }
-            // Constraint we don't know how to satisfy on a placeholder field
-            // (e.g. pattern, custom format). Give up on this item.
-            return null;
-        }
-
-        // additionalProperties errors point at the *parent* object; the
-        // offending key is in params, not in instancePath.
-        if (err.keyword === 'additionalProperties' && typeof err.params?.additionalProperty === 'string') {
-            deleteAtPath(cloned, [...path, err.params.additionalProperty]);
+            if (setAtPath(cloned, path, fix.value)) changed = true;
             continue;
         }
 
         // User-supplied field with a violation we don't try to coerce.
         // Strip it; if the schema declares it required, the next push will
         // re-add a placeholder.
-        deleteAtPath(cloned, path);
+        if (deleteAtPath(cloned, path)) changed = true;
     }
 
-    return cloned;
+    // Nothing we could act on (paths that no longer exist, keywords with no
+    // handler): the next push would fail identically, so drop the item now
+    // instead of spending every remaining attempt to learn that.
+    return changed ? cloned : null;
+}
+
+// Order one item's errors so the repairs don't interfere with each other.
+// Deleting `/tags/0` shifts every later element down, so sibling array
+// indices have to be handled highest-first; deeper paths come before their
+// ancestors for the same reason.
+function sortForRepair(validationErrors: ValidationError[]): ValidationError[] {
+    return validationErrors
+        .map((err) => ({ err, path: parseJsonPointer(err.instancePath || '') }))
+        .sort((a, b) => comparePaths(a.path, b.path))
+        .map((entry) => entry.err);
+}
+
+function comparePaths(a: string[], b: string[]): number {
+    for (let i = 0; i < Math.min(a.length, b.length); i++) {
+        if (a[i] === b[i]) continue;
+        const ai = Number(a[i]);
+        const bi = Number(b[i]);
+        // Sibling array elements: highest index first.
+        if (Number.isInteger(ai) && Number.isInteger(bi)) return bi - ai;
+        return a[i] < b[i] ? -1 : 1;
+    }
+    // Same prefix: the deeper path first.
+    return b.length - a.length;
 }
 
 // Pick a value that will satisfy `err.keyword` on a placeholder field.
@@ -364,8 +453,19 @@ function parseJsonPointer(pointer: string): string[] {
         .map((seg) => seg.replace(/~1/g, '/').replace(/~0/g, '~'));
 }
 
-// Delete the value at `path` inside `obj`. Arrays splice (so later
-// `/tags/N` errors in the same round line up with their original indices).
+// Inverse of parseJsonPointer — used to record placeholder paths in the same
+// encoding the API reports them in, so later errors match by string.
+function toJsonPointer(path: string[]): string {
+    return path.map((seg) => `/${escapeJsonPointerSegment(seg)}`).join('');
+}
+
+function escapeJsonPointerSegment(segment: string): string {
+    return segment.replace(/~/g, '~0').replace(/\//g, '~1');
+}
+
+// Delete the value at `path` inside `obj`. Arrays splice; `sortForRepair`
+// makes sure sibling indices are processed highest-first so the shift
+// doesn't invalidate the paths we haven't handled yet.
 function deleteAtPath(obj: unknown, path: string[]): boolean {
     if (path.length === 0) return false;
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -390,8 +490,9 @@ function deleteAtPath(obj: unknown, path: string[]): boolean {
     return false;
 }
 
-// Set the value at `path` inside `obj`. Creates nothing — the path must
-// already exist (placeholder fields are created at the root, not nested).
+// Set the value at `path` inside `obj`. Only the final segment is created —
+// every parent on the way has to exist already (it does: the API reports the
+// error against an object it found).
 function setAtPath(obj: unknown, path: string[], value: unknown): boolean {
     if (path.length === 0) return false;
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
