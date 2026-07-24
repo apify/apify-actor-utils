@@ -73,6 +73,22 @@ The retry loop chases one layer of errors per round
 (`required` → `type` → push) until either the push succeeds
 or `maxAttempts` (default 5) is hit.
 
+## Logging
+
+Every failed round logs which fields went wrong, so you can fix the schema
+(or the scraper) without digging through the returned `dropped` items:
+
+```
+safePushData: schema validation failed on attempt 1: 12 invalid item(s); repaired fields: /age (type), /name (required), /tags/[] (type); dropped 2 item(s) on unfixable fields: /email (format); retrying with 10 item(s).
+safePushData: gave up after 5 attempts with 3 item(s) still failing on fields: /sku (pattern).
+```
+
+The field list is a **set**, not a per-item breakdown — one bad field
+usually shows up on many items in a batch, and knowing which item had which
+problem rarely changes what you do about it. Array indices collapse
+(`/tags/0`, `/tags/7` → `/tags/[]`) for the same reason, and the list is
+capped at 20 entries with the rest reported as `(+N more)`.
+
 ## Options
 
 | Option        | Type     | Default | Notes                |

@@ -45,6 +45,22 @@ function makeMockPush(validate: (item: Item) => ValidationError[] | null) {
     return { pushFn, calls };
 }
 
+// Swap console.log for a recorder, run `fn`, restore. Returns every logged
+// line so the assertions can inspect what the wrapper reported.
+async function captureLogs(fn: () => Promise<void>): Promise<string[]> {
+    const lines: string[] = [];
+    const original = console.log;
+    console.log = (...args: unknown[]) => {
+        lines.push(args.join(' '));
+    };
+    try {
+        await fn();
+    } finally {
+        console.log = original;
+    }
+    return lines;
+}
+
 test('isSchemaValidationError recognises the API shape', () => {
     assert.equal(isSchemaValidationError(null), false);
     assert.equal(isSchemaValidationError({}), false);
@@ -492,6 +508,118 @@ test('maxAttempts <= 0 is clamped to 1 (attempts always matches real pushFn call
     const res = await safePushData(pushFn, [{ age: 30 }], { maxAttempts: 0 });
     assert.equal(calls, 1);
     assert.equal(res.attempts, 1);
+});
+
+test('round log names the offending fields, deduped across items', async () => {
+    const validate = (item: Item): ValidationError[] | null => {
+        const errors: ValidationError[] = [];
+        if (item?.age != null && typeof item.age !== 'number') {
+            errors.push({ instancePath: '/age', keyword: 'type', params: { type: 'integer' }, message: 'x' });
+        }
+        if (Array.isArray(item?.tags)) {
+            (item.tags as unknown[]).forEach((t, i) => {
+                if (typeof t !== 'string') {
+                    errors.push({
+                        instancePath: `/tags/${i}`,
+                        keyword: 'type',
+                        params: { type: 'string' },
+                        message: 'x',
+                    });
+                }
+            });
+        }
+        return errors.length > 0 ? errors : null;
+    };
+    const { pushFn } = makeMockPush(validate);
+    const lines = await captureLogs(async () => {
+        const res = await safePushData(pushFn, [
+            { name: 'a', age: 'old', tags: [1, 'ok'] },
+            { name: 'b', age: 'x', tags: ['ok', 2] },
+        ]);
+        assert.equal(res.pushed, 2);
+    });
+    assert.equal(lines.length, 1);
+    // Both items hit /age, and the bad array elements (at different indices)
+    // collapse into one `/tags/[]` entry — the log reports fields, not
+    // occurrences.
+    assert.equal(
+        lines[0],
+        'safePushData: schema validation failed on attempt 1: 2 invalid item(s); ' +
+            'repaired fields: /age (type), /tags/[] (type); retrying with 2 item(s).',
+    );
+});
+
+test('round log reports a missing required field under its own path', async () => {
+    const validate = (item: Item): ValidationError[] | null =>
+        item?.name === undefined
+            ? [{ instancePath: '', keyword: 'required', params: { missingProperty: 'name' }, message: 'x' }]
+            : null;
+    const { pushFn } = makeMockPush(validate);
+    const lines = await captureLogs(async () => {
+        await safePushData(pushFn, [{ age: 1 }]);
+    });
+    assert.ok(lines[0].includes('repaired fields: /name (required)'), lines[0]);
+});
+
+test('round log separates dropped items and their unfixable fields', async () => {
+    // Root-level `type` error: the item itself is the wrong shape, so it is
+    // dropped rather than cleaned.
+    const { pushFn } = makeMockPush(() => [
+        { instancePath: '', keyword: 'type', params: { type: 'object' }, message: 'x' },
+    ]);
+    const lines = await captureLogs(async () => {
+        const res = await safePushData(pushFn, [{ age: 1 }]);
+        assert.equal(res.dropped.length, 1);
+    });
+    assert.equal(
+        lines[0],
+        'safePushData: schema validation failed on attempt 1: 1 invalid item(s); ' +
+            'dropped 1 item(s) on unfixable fields: (item root) (type); nothing left to retry.',
+    );
+});
+
+test('give-up log names the fields that are still failing', async () => {
+    let calls = 0;
+    const pushFn: PushFn<Item> = async (batch) => {
+        calls++;
+        throw fakeSchemaError(
+            batch.map((_, i) => ({
+                itemPosition: i,
+                validationErrors: [
+                    { instancePath: `/extra${calls}`, keyword: 'type', params: { type: 'string' }, message: 'x' },
+                ],
+            })),
+        );
+    };
+    const lines = await captureLogs(async () => {
+        await safePushData(pushFn, [{ name: 'X' }], { maxAttempts: 3 });
+    });
+    const giveUp = lines[lines.length - 1];
+    assert.equal(
+        giveUp,
+        'safePushData: gave up after 3 attempts with 1 item(s) still failing on fields: /extra3 (type).',
+    );
+});
+
+test('field list in the log is capped, with the overflow counted', async () => {
+    // 25 distinct bad fields on one item; only the first 20 are spelled out.
+    const badFields = Array.from({ length: 25 }, (_, i) => `f${String(i).padStart(2, '0')}`);
+    const validate = (item: Item): ValidationError[] | null => {
+        const errors = badFields
+            .filter((f) => f in (item ?? {}))
+            .map((f) => ({ instancePath: `/${f}`, keyword: 'type', params: { type: 'string' }, message: 'x' }));
+        return errors.length > 0 ? errors : null;
+    };
+    const { pushFn } = makeMockPush(validate);
+    const item: Item = {};
+    for (const f of badFields) item[f] = 1;
+    const lines = await captureLogs(async () => {
+        const res = await safePushData(pushFn, [item]);
+        assert.equal(res.pushed, 1);
+    });
+    assert.ok(lines[0].includes('/f00 (type), /f01 (type)'), lines[0]);
+    assert.ok(lines[0].includes('/f19 (type) (+5 more)'), lines[0]);
+    assert.ok(!lines[0].includes('/f20 (type)'), lines[0]);
 });
 
 test('out-of-range itemPosition in the error payload is ignored, not a crash', async () => {

@@ -11,6 +11,11 @@
 
 const SCHEMA_ERROR_TYPE = 'schema-validation-error';
 
+// Cap on how many distinct field issues we spell out in one log line. A
+// pathological batch can fail on hundreds of fields; the overflow is
+// summarised as a count instead of flooding the Actor log.
+const MAX_LOGGED_FIELDS = 20;
+
 // One AJV error in the API response. The keyword + instancePath pair tells
 // us what's wrong and where; params holds keyword-specific extras
 // (e.g. { missingProperty: 'name' } for `required`).
@@ -125,6 +130,14 @@ async function cleanAndRetry<T>(
         // below don't shift positions we still need to look at.
         const invalids = lastError.data.invalidItems.slice().sort((a, b) => b.itemPosition - a.itemPosition);
 
+        // Which fields went wrong this round, across every failing item. We
+        // deliberately don't track which item had which problem — with more
+        // than one bad item that detail is noise, and the field set is what
+        // actually tells you what to fix in the schema or the scraper.
+        const cleanedFields = new Set<string>();
+        const droppedFields = new Set<string>();
+        let droppedThisRound = 0;
+
         for (const invalid of invalids) {
             const i = invalid.itemPosition;
             // Guard against a malformed/unexpected error payload (e.g. a
@@ -137,6 +150,8 @@ async function cleanAndRetry<T>(
             const cleaned = cleanItemFields(working[i], invalid.validationErrors, placeholderPaths[i]);
             if (cleaned === null) {
                 dropped.push({ item: originalAt[i], errors: invalid.validationErrors });
+                droppedThisRound++;
+                collectFieldIssues(invalid.validationErrors, droppedFields);
                 working.splice(i, 1);
                 originalAt.splice(i, 1);
                 placeholderPaths.splice(i, 1);
@@ -144,14 +159,19 @@ async function cleanAndRetry<T>(
             } else {
                 working[i] = cleaned;
                 lastErrorsAt[i] = invalid.validationErrors;
+                collectFieldIssues(invalid.validationErrors, cleanedFields);
             }
         }
 
-        console.log(
-            `safePushData: schema validation failed on attempt ${attempts}: ` +
-                `${lastError.data.invalidItems.length} invalid item(s); ` +
-                `retrying with ${working.length} item(s).`,
-        );
+        const report = [
+            `safePushData: schema validation failed on attempt ${attempts}: ${lastError.data.invalidItems.length} invalid item(s)`,
+        ];
+        if (cleanedFields.size > 0) report.push(`repaired fields: ${formatFields(cleanedFields)}`);
+        if (droppedThisRound > 0) {
+            report.push(`dropped ${droppedThisRound} item(s) on unfixable fields: ${formatFields(droppedFields)}`);
+        }
+        report.push(working.length > 0 ? `retrying with ${working.length} item(s).` : 'nothing left to retry.');
+        console.log(report.join('; '));
 
         if (working.length === 0) {
             return { pushed: originalItems.length - dropped.length, dropped, attempts };
@@ -159,8 +179,11 @@ async function cleanAndRetry<T>(
 
         attempts++;
         if (attempts > maxAttempts) {
+            const unresolvedFields = new Set<string>();
+            for (const errors of lastErrorsAt) collectFieldIssues(errors, unresolvedFields);
+            const on = unresolvedFields.size > 0 ? ` on fields: ${formatFields(unresolvedFields)}` : '';
             console.log(
-                `safePushData: gave up after ${maxAttempts} attempts with ${working.length} item(s) still failing.`,
+                `safePushData: gave up after ${maxAttempts} attempts with ${working.length} item(s) still failing${on}.`,
             );
             for (let i = 0; i < working.length; i++) {
                 dropped.push({ item: originalAt[i], errors: lastErrorsAt[i] });
@@ -176,6 +199,50 @@ async function cleanAndRetry<T>(
             lastError = err;
         }
     }
+}
+
+// Add a `path (keyword)` label for every AJV error into `into`. A Set is
+// used on purpose: one bad field usually shows up on many items in the
+// batch, and repeating it once per item makes the log unreadable.
+function collectFieldIssues(validationErrors: readonly ValidationError[], into: Set<string>): void {
+    for (const err of validationErrors) into.add(fieldIssueLabel(err));
+}
+
+// Human-readable "which field is broken, and how" for one AJV error.
+//
+// `required` and `additionalProperties` report the *parent* in instancePath
+// and name the offending key in params, so we re-attach it — otherwise a
+// missing top-level field would log as the useless `(item root)`.
+function fieldIssueLabel(err: ValidationError): string {
+    const parent = err.instancePath || '';
+    const child = offendingKey(err.params);
+    const path = child === undefined ? parent : `${parent}/${escapeJsonPointerSegment(child)}`;
+    return `${path === '' ? '(item root)' : collapseArrayIndices(path)} (${err.keyword})`;
+}
+
+function offendingKey(params: Record<string, unknown> | undefined): string | undefined {
+    if (typeof params?.missingProperty === 'string') return params.missingProperty;
+    if (typeof params?.additionalProperty === 'string') return params.additionalProperty;
+    return undefined;
+}
+
+// `/tags/0` and `/tags/7` are the same *field* as far as the log is
+// concerned, so collapse numeric segments into `/tags/[]`. Keeps a batch
+// with a hundred bad array elements down to a single entry.
+function collapseArrayIndices(path: string): string {
+    return path.replace(/\/\d+(?=\/|$)/g, '/[]');
+}
+
+function escapeJsonPointerSegment(segment: string): string {
+    return segment.replace(/~/g, '~0').replace(/\//g, '~1');
+}
+
+// Render a field-issue set as a stable, bounded, comma-separated list.
+function formatFields(fields: ReadonlySet<string>): string {
+    const sorted = [...fields].sort();
+    if (sorted.length <= MAX_LOGGED_FIELDS) return sorted.join(', ');
+    const shown = sorted.slice(0, MAX_LOGGED_FIELDS);
+    return `${shown.join(', ')} (+${sorted.length - MAX_LOGGED_FIELDS} more)`;
 }
 
 // Try to repair a single item given its AJV errors. Returns null when the
