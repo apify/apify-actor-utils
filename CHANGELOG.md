@@ -12,8 +12,6 @@ All notable changes to this project will be documented in this file.
 
 - **gteam-internal:** Make safePushData&#x27;s alias&#x2F;eventName options mutually exclusive ([#7](https://github.com/apify/apify-actor-utils/pull/7)) ([02ffc12](https://github.com/apify/apify-actor-utils/commit/02ffc121bef4364756d19888b1d30a1f730f522b)) by [@yaroslav-tykhovetskyi-apify](https://github.com/yaroslav-tykhovetskyi-apify)
 
-
-
 ## [0.1.3](https://github.com/apify/apify-actor-utils/releases/tag/v0.1.3) (2026-07-27)
 
 ### 🚀 Features
