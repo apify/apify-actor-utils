@@ -2,6 +2,15 @@
 
 All notable changes to this project will be documented in this file.
 
+<!-- git-cliff-unreleased-start -->
+## 0.1.5 - **not yet released**
+
+### 🐛 Bug Fixes
+
+- **gteam-internal:** Widen @crawlee&#x2F;core peer range, add typesVersions for subpath imports ([#8](https://github.com/apify/apify-actor-utils/pull/8)) ([f8e1f40](https://github.com/apify/apify-actor-utils/commit/f8e1f40df2852b9fd16398537124c85789124846)) by [@yaroslav-tykhovetskyi-apify](https://github.com/yaroslav-tykhovetskyi-apify)
+
+
+<!-- git-cliff-unreleased-end -->
 ## [0.1.4](https://github.com/apify/apify-actor-utils/releases/tag/v0.1.4) (2026-07-27)
 
 ### 🚀 Features
