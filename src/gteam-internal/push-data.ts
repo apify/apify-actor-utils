@@ -39,7 +39,10 @@ async function wrapPushData<R>(pushDataFn: () => Promise<R>): Promise<R> {
  * await safePushData(report, { alias: 'competitorAnalysis' });
  * ```
  */
-export async function safePushData<T extends object>(data: T | T[], options?: { alias: string }): Promise<void>;
+export async function safePushData<T extends object>(
+    data: T | T[],
+    options?: { alias: string; eventName?: never },
+): Promise<void>;
 /**
  * Pushes to the default dataset and atomically charges for `eventName`, via
  * {@link Actor.pushData}'s built-in pay-per-event support. Converts a
@@ -57,7 +60,7 @@ export async function safePushData<T extends object>(data: T | T[], options?: { 
  */
 export async function safePushData<T extends object>(
     data: T | T[],
-    options: { eventName: string },
+    options: { eventName: string; alias?: never },
 ): Promise<ChargeResult>;
 export async function safePushData<T extends object>(
     data: T | T[],
