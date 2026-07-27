@@ -2,15 +2,13 @@
 
 All notable changes to this project will be documented in this file.
 
-<!-- git-cliff-unreleased-start -->
-## 0.1.7 - **not yet released**
+## [0.1.7](https://github.com/apify/apify-actor-utils/releases/tag/v0.1.7) (2026-07-27)
 
 ### 🐛 Bug Fixes
 
 - **peerDeps:** Allow everything under major version ([74a1c4d](https://github.com/apify/apify-actor-utils/commit/74a1c4db6282155a8b0dd3ed4d9650237266370b)) by [@metalwarrior665](https://github.com/metalwarrior665)
 
 
-<!-- git-cliff-unreleased-end -->
 ## [0.1.6](https://github.com/apify/apify-actor-utils/releases/tag/v0.1.6) (2026-07-27)
 
 
