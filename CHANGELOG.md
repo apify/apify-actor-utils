@@ -2,6 +2,9 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.1.6](https://github.com/apify/apify-actor-utils/releases/tag/v0.1.6) (2026-07-27)
+
+
 ## [0.1.5](https://github.com/apify/apify-actor-utils/releases/tag/v0.1.5) (2026-07-27)
 
 ### 🐛 Bug Fixes
