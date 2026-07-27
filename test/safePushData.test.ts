@@ -1,6 +1,4 @@
-// Run: npm test (builds then runs the compiled suite under node --test)
-import assert from 'node:assert/strict';
-import test from 'node:test';
+import { expect, test } from 'vitest';
 
 import { isSchemaValidationError, type PushFn, safePushData, type ValidationError } from '../src/safePushData.js';
 
@@ -46,27 +44,26 @@ function makeMockPush(validate: (item: Item) => ValidationError[] | null) {
 }
 
 test('isSchemaValidationError recognises the API shape', () => {
-    assert.equal(isSchemaValidationError(null), false);
-    assert.equal(isSchemaValidationError({}), false);
-    assert.equal(
+    expect(isSchemaValidationError(null)).toBe(false);
+    expect(isSchemaValidationError({})).toBe(false);
+    expect(
         isSchemaValidationError({ type: 'schema-validation-error', statusCode: 400, data: { invalidItems: [] } }),
-        true,
-    );
-    assert.equal(isSchemaValidationError({ type: 'other', statusCode: 400, data: { invalidItems: [] } }), false);
+    ).toBe(true);
+    expect(isSchemaValidationError({ type: 'other', statusCode: 400, data: { invalidItems: [] } })).toBe(false);
 });
 
 test('happy path: one push, no allocations beyond the result object', async () => {
     const { pushFn, calls } = makeMockPush(() => null);
     const items: Item[] = [{ a: 1 }, { a: 2 }];
     const res = await safePushData(pushFn, items);
-    assert.equal(res.pushed, 2);
-    assert.equal(res.dropped.length, 0);
-    assert.equal(res.attempts, 1);
+    expect(res.pushed).toBe(2);
+    expect(res.dropped.length).toBe(0);
+    expect(res.attempts).toBe(1);
     // The wrapper handed the caller's exact array to pushFn (same reference).
     // The mock snapshots its argument so we can only check shape, but the
     // count proves the happy path didn't copy/wrap.
-    assert.equal(calls.length, 1);
-    assert.equal(calls[0].length, 2);
+    expect(calls.length).toBe(1);
+    expect(calls[0].length).toBe(2);
 });
 
 test('deletes invalid field, then retries successfully', async () => {
@@ -89,9 +86,9 @@ test('deletes invalid field, then retries successfully', async () => {
         { name: 'Alice', age: 30 },
         { name: 'Bob', age: 'old' },
     ]);
-    assert.equal(res.pushed, 2);
-    assert.equal(res.dropped.length, 0);
-    assert.deepEqual(calls[1][1], { name: 'Bob' });
+    expect(res.pushed).toBe(2);
+    expect(res.dropped.length).toBe(0);
+    expect(calls[1][1]).toEqual({ name: 'Bob' });
 });
 
 test('placeholders a missing required field, then satisfies the type', async () => {
@@ -119,10 +116,10 @@ test('placeholders a missing required field, then satisfies the type', async () 
     };
     const { pushFn, calls } = makeMockPush(validate);
     const res = await safePushData(pushFn, { age: 30 });
-    assert.equal(res.pushed, 1);
-    assert.equal(res.dropped.length, 0);
+    expect(res.pushed).toBe(1);
+    expect(res.dropped.length).toBe(0);
     // Final pushed item: name was placeholder'd to null, then upgraded to ''.
-    assert.deepEqual(calls[calls.length - 1][0], { age: 30, name: '' });
+    expect(calls[calls.length - 1][0]).toEqual({ age: 30, name: '' });
 });
 
 test('drops item when a placeholder field carries a minLength it cannot satisfy', async () => {
@@ -163,9 +160,9 @@ test('drops item when a placeholder field carries a minLength it cannot satisfy'
     };
     const { pushFn } = makeMockPush(validate);
     const res = await safePushData(pushFn, { age: 30 }, { maxAttempts: 10 });
-    assert.equal(res.pushed, 0);
-    assert.equal(res.dropped.length, 1);
-    assert.deepEqual(res.dropped[0].item, { age: 30 });
+    expect(res.pushed).toBe(0);
+    expect(res.dropped.length).toBe(1);
+    expect(res.dropped[0].item).toEqual({ age: 30 });
 });
 
 test('drops item on enum constraint instead of fabricating the first allowed value', async () => {
@@ -208,8 +205,8 @@ test('drops item on enum constraint instead of fabricating the first allowed val
     };
     const { pushFn } = makeMockPush(validate);
     const res = await safePushData(pushFn, { name: 'x' }, { maxAttempts: 10 });
-    assert.equal(res.pushed, 0);
-    assert.equal(res.dropped.length, 1);
+    expect(res.pushed).toBe(0);
+    expect(res.dropped.length).toBe(1);
 });
 
 test('drops item on format=email instead of fabricating a fake address', async () => {
@@ -250,8 +247,8 @@ test('drops item on format=email instead of fabricating a fake address', async (
     };
     const { pushFn } = makeMockPush(validate);
     const res = await safePushData(pushFn, { name: 'x' }, { maxAttempts: 10 });
-    assert.equal(res.pushed, 0);
-    assert.equal(res.dropped.length, 1);
+    expect(res.pushed).toBe(0);
+    expect(res.dropped.length).toBe(1);
 });
 
 test('required field with a union type that allows null is placeholder-filled with null', async () => {
@@ -284,9 +281,9 @@ test('required field with a union type that allows null is placeholder-filled wi
     };
     const { pushFn, calls } = makeMockPush(validate);
     const res = await safePushData(pushFn, { name: 'x' });
-    assert.equal(res.pushed, 1);
-    assert.equal(res.dropped.length, 0);
-    assert.deepEqual(calls[calls.length - 1][0], { name: 'x', note: null });
+    expect(res.pushed).toBe(1);
+    expect(res.dropped.length).toBe(0);
+    expect(calls[calls.length - 1][0]).toEqual({ name: 'x', note: null });
 });
 
 test('drops item when a placeholder constraint has no known fix (pattern)', async () => {
@@ -323,8 +320,8 @@ test('drops item when a placeholder constraint has no known fix (pattern)', asyn
     };
     const { pushFn } = makeMockPush(validate);
     const res = await safePushData(pushFn, [{ name: 'x' }], { maxAttempts: 10 });
-    assert.equal(res.pushed, 0);
-    assert.equal(res.dropped.length, 1);
+    expect(res.pushed).toBe(0);
+    expect(res.dropped.length).toBe(1);
 });
 
 test('user-supplied bad data still gets the field stripped, not placeholder-treated', async () => {
@@ -343,10 +340,10 @@ test('user-supplied bad data still gets the field stripped, not placeholder-trea
     };
     const { pushFn, calls } = makeMockPush(validate);
     const res = await safePushData(pushFn, [{ name: 'Bob', age: 'old' }]);
-    assert.equal(res.pushed, 1);
+    expect(res.pushed).toBe(1);
     // age was user-supplied (not a placeholder we set), so it got deleted
     // rather than coerced to 0.
-    assert.deepEqual(calls[calls.length - 1][0], { name: 'Bob' });
+    expect(calls[calls.length - 1][0]).toEqual({ name: 'Bob' });
 });
 
 test('removes bad element from array via /tags/0 path', async () => {
@@ -370,10 +367,10 @@ test('removes bad element from array via /tags/0 path', async () => {
     };
     const { pushFn, calls } = makeMockPush(validate);
     const res = await safePushData(pushFn, [{ name: 'Eve', tags: [42, 'ok', 99] }]);
-    assert.equal(res.pushed, 1);
+    expect(res.pushed).toBe(1);
     const finalPushed = calls[calls.length - 1][0];
-    assert.equal(finalPushed.name, 'Eve');
-    assert.ok((finalPushed.tags as unknown[]).every((t) => typeof t === 'string'));
+    expect(finalPushed.name).toBe('Eve');
+    expect((finalPushed.tags as unknown[]).every((t) => typeof t === 'string')).toBe(true);
 });
 
 test('single object input: dropped on missing-required, no crash', async () => {
@@ -387,9 +384,9 @@ test('single object input: dropped on missing-required, no crash', async () => {
         },
     ]);
     const res = await safePushData(pushFn, { age: 99 });
-    assert.equal(res.pushed, 0);
-    assert.equal(res.dropped.length, 1);
-    assert.deepEqual(res.dropped[0].item, { age: 99 });
+    expect(res.pushed).toBe(0);
+    expect(res.dropped.length).toBe(1);
+    expect(res.dropped[0].item).toEqual({ age: 99 });
 });
 
 test('non-schema error is rethrown', async () => {
@@ -398,7 +395,7 @@ test('non-schema error is rethrown', async () => {
         err.statusCode = 500;
         throw err;
     };
-    await assert.rejects(async () => safePushData(pushFn, [{ x: 1 }]), /boom/);
+    await expect(safePushData(pushFn, [{ x: 1 }])).rejects.toThrow(/boom/);
 });
 
 test('empty array input: returns immediately (but pushFn is still called once)', async () => {
@@ -407,11 +404,11 @@ test('empty array input: returns immediately (but pushFn is still called once)',
         called++;
     };
     const res = await safePushData(pushFn, []);
-    assert.equal(res.pushed, 0);
-    assert.equal(res.attempts, 1);
+    expect(res.pushed).toBe(0);
+    expect(res.attempts).toBe(1);
     // Happy path goes through pushFn once even on []; this is intentional —
     // the wrapper doesn't second-guess what `pushFn([])` means for the caller.
-    assert.equal(called, 1);
+    expect(called).toBe(1);
 });
 
 test('original input array is not mutated', async () => {
@@ -421,7 +418,7 @@ test('original input array is not mutated', async () => {
     const original: Item[] = [{ name: 'A' }, { name: 'B', bad: true }];
     const snapshot = structuredClone(original);
     await safePushData(pushFn, original);
-    assert.deepEqual(original, snapshot);
+    expect(original).toEqual(snapshot);
 });
 
 test('gives up after maxAttempts with remaining items still failing', async () => {
@@ -446,9 +443,9 @@ test('gives up after maxAttempts with remaining items still failing', async () =
         );
     };
     const res = await safePushData(pushFn, [{ name: 'X' }], { maxAttempts: 3 });
-    assert.equal(res.pushed, 0);
-    assert.equal(res.dropped.length, 1);
-    assert.equal(res.attempts, 3);
+    expect(res.pushed).toBe(0);
+    expect(res.dropped.length).toBe(1);
+    expect(res.attempts).toBe(3);
 });
 
 test('give-up drop reports the last validation errors, not an empty array', async () => {
@@ -470,8 +467,8 @@ test('give-up drop reports the last validation errors, not an empty array', asyn
         );
     };
     const res = await safePushData(pushFn, [{ name: 'X' }], { maxAttempts: 3 });
-    assert.equal(res.dropped.length, 1);
-    assert.deepEqual(res.dropped[0].errors, [
+    expect(res.dropped.length).toBe(1);
+    expect(res.dropped[0].errors).toEqual([
         { instancePath: '/extra3', keyword: 'type', params: { type: 'string' }, message: 'forever-failing' },
     ]);
 });
@@ -490,8 +487,8 @@ test('maxAttempts <= 0 is clamped to 1 (attempts always matches real pushFn call
         ]);
     };
     const res = await safePushData(pushFn, [{ age: 30 }], { maxAttempts: 0 });
-    assert.equal(calls, 1);
-    assert.equal(res.attempts, 1);
+    expect(calls).toBe(1);
+    expect(res.attempts).toBe(1);
 });
 
 test('out-of-range itemPosition in the error payload is ignored, not a crash', async () => {
@@ -506,7 +503,7 @@ test('out-of-range itemPosition in the error payload is ignored, not a crash', a
         ]);
     };
     const res = await safePushData(pushFn, [{ age: 30 }], { maxAttempts: 2 });
-    assert.equal(res.pushed, 0);
-    assert.equal(res.dropped.length, 1);
-    assert.deepEqual(res.dropped[0].item, { age: 30 });
+    expect(res.pushed).toBe(0);
+    expect(res.dropped.length).toBe(1);
+    expect(res.dropped[0].item).toEqual({ age: 30 });
 });

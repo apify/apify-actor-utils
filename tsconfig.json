@@ -14,5 +14,5 @@
         "types": ["node"],
         "importHelpers": false
     },
-    "include": ["./index.ts", "src/**/*.ts", "test/**/*.ts"]
+    "include": ["./index.ts", "src/**/*.ts", "test/**/*.ts", "vitest.config.ts"]
 }

@@ -35,7 +35,10 @@ function walk(dir) {
         const full = join(dir, name);
         const stat = statSync(full);
         if (stat.isDirectory()) {
-            if (name === 'node_modules' || name.startsWith('.')) continue;
+            // gteam-internal calls Actor.pushData directly by design (its
+            // safePushData wraps the Apify SDK call itself, unlike the
+            // top-level pushFn-injection pattern this guard protects).
+            if (name === 'node_modules' || name === 'gteam-internal' || name.startsWith('.')) continue;
             out.push(...walk(full));
         } else if (EXTENSIONS.has(full.slice(full.lastIndexOf('.')))) {
             out.push(full);

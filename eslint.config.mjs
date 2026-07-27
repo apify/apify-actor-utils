@@ -39,11 +39,14 @@ export default [
         },
     },
     {
-        // node:test's `test(name, fn)` is fire-and-forget by design — the
+        // vitest's `test`/`it` calls are fire-and-forget by design — the
         // runner tracks the returned promise itself, callers don't await it.
         files: ['test/**/*.ts'],
         rules: {
             '@typescript-eslint/no-floating-promises': 0,
+            // vi.mock() factories commonly define more than one small fixture
+            // class per file (e.g. mocked error constructors).
+            'max-classes-per-file': 0,
         },
     },
     {
@@ -52,6 +55,14 @@ export default [
         files: ['scripts/**/*.mjs'],
         rules: {
             'import/no-extraneous-dependencies': 0,
+        },
+    },
+    {
+        // 'vitest/config' is a subpath export the extensions rule can't
+        // resolve to a concrete file, so it falls back to demanding one.
+        files: ['vitest.config.ts'],
+        rules: {
+            'import/extensions': 0,
         },
     },
 ];
