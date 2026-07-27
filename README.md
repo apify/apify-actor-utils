@@ -131,19 +131,13 @@ interface PushDataWithSchemaRepairResult<T, R = unknown> {
 }
 ```
 
-## gteam-internal
-
-`@apify/actor-utils/gteam-internal` is a separate export — see
-[src/gteam-internal/README.md](src/gteam-internal/README.md).
-
 ## CI
 
 Run `npm run ci` (typecheck + lint + format check + push-data guard + tests).
 Highlights:
 
 - `scripts/check-pushdata.mjs` greps `src/` and `test/` for any
-  `.pushData(` call expression and fails if one exists (except
-  `gteam-internal`, see above).
+  `.pushData(` call expression and fails if one exists.
 - `npm test` runs the whole `test/` tree with Vitest, straight from source.
 
 ## Layout
