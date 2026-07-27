@@ -37,6 +37,19 @@
         "dist/index.d.ts.map",
         "dist/src"
     ],
+    "typesVersions": {
+        "*": {
+            "qc-logger": [
+                "dist/src/qc-logger/index.d.ts"
+            ],
+            "type-utils": [
+                "dist/src/type-utils/index.d.ts"
+            ],
+            "gteam-internal": [
+                "dist/src/gteam-internal/index.d.ts"
+            ]
+        }
+    },
     "scripts": {
         "build": "tsc",
         "typecheck": "tsc --noEmit",
@@ -78,7 +91,7 @@
     "license": "ISC",
     "peerDependencies": {
         "@apify/log": "^2.5.44",
-        "@crawlee/core": "~3.16",
+        "@crawlee/core": "^3.16.0",
         "apify": "~3.7",
         "apify-client": "~2.17"
     },
