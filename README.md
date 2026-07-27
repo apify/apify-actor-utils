@@ -111,9 +111,17 @@ Every failed round logs which fields went wrong, so you can fix the schema
 (or the scraper) without digging through the returned `droppedItems`:
 
 ```
-pushDataWithSchemaRepair: schema validation failed on attempt 1: 12 invalid item(s); repaired fields: /age (type integer), /name (required), /tags/[] (type string); dropped 2 item(s) on unfixable fields: /email (format); retrying with 10 item(s).
-pushDataWithSchemaRepair: gave up after 5 attempts; dropped 3 item(s) still failing on fields: /sku (pattern); pushing the 9 valid item(s) left.
+WARN  pushDataWithSchemaRepair: schema validation failed on attempt 1: 12 invalid item(s); repaired fields: /age (type integer), /name (required), /tags/[] (type string); dropped 2 item(s) on unfixable fields: /email (format); retrying with 10 item(s).
+WARN  pushDataWithSchemaRepair: gave up after 5 attempts; dropped 3 item(s) still failing on fields: /sku (pattern); pushing the 9 valid item(s) left.
 ```
+
+Lines go through [`@apify/log`](https://www.npmjs.com/package/@apify/log) (a
+required peer dependency) at **`WARNING`** level — every one of them means a
+push was rejected and items were altered or lost, which is never routine. The
+wrapper uses a `log.child({ prefix: 'pushDataWithSchemaRepair' })`, so the lines
+inherit whatever level, format and prefix the Actor configured: set
+`APIFY_LOG_LEVEL=ERROR` to silence them, or `log.setOptions({ logger: new
+LoggerJson() })` to get them as JSON.
 
 The field list is a **set**, not a per-item breakdown — one bad field
 usually shows up on many items in a batch, and knowing which item had which
