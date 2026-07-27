@@ -53,6 +53,15 @@ every AJV error per item:
 | Constraint on **user-supplied** data | Delete the field. If the schema later marks it required, a placeholder takes over. |
 | Nothing on the item was actionable   | Item is dropped — an unchanged item would fail identically on the next push.       |
 
+Deleting a field for failing a `type` we can't invent (`number`, `boolean`,
+`integer`) **remembers that type**. If a later round reports the same path as
+`required`, the wrapper knows a placeholder is a dead end and drops the item
+right there rather than filling in `null` and failing the identical type one
+round later. That's what keeps a field like `permanentlyClosed: 'rwer'` against
+a required `boolean` from going unnamed in the drop report. Only `type` is
+carried over — the expected type is fixed by the schema, whereas `pattern` /
+`minLength` / `enum` say nothing certain about whether `''` would satisfy them.
+
 All errors reported for a path are considered **together**. AJV reports
 composite keywords next to the branch errors that explain them, so a nullable
 object arrives as `type: object`, `type: null` _and_ `anyOf` at once — a path is
@@ -132,9 +141,14 @@ and the second round's log is the one that matters. Given a schema requiring
 Round 1 placeholders all four to `null`. Round 2 upgrades `/title` to `''` and
 `/categories` to `[]` — but `/imagesCount` and `/isAdvertisement` would need a
 fabricated `0` / `false`, so the item is dropped and **only those two are
-named**. If you want items like this to survive, the fix is in the schema: make
-the required number and boolean fields nullable (`["number", "null"]`), or drop
-them from `required`.
+named**. A required field the caller got wrong itself — say
+`isAdvertisement: 'rwer'` — is named in the same round: round 1 deletes the bad
+string but keeps the `boolean` it learned, so round 2 recognises the dead end
+instead of deferring it.
+
+If you want items like this to survive, the fix is in the schema: make the
+required number and boolean fields nullable (`["number", "null"]`), or drop them
+from `required`.
 
 ## Options
 

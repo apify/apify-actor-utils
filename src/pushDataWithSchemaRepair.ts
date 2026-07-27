@@ -140,6 +140,12 @@ async function cleanAndRetry<T, R>(
     // without looping forever; for user-supplied fields the existing
     // "delete the field" behaviour stays in effect.
     const placeholderPaths: Set<string>[] = originalItems.map(() => new Set<string>());
+    // Parallel to `working`. Paths whose declared type we've already learned we
+    // can't invent a value for, mapped to the `type` error that proved it.
+    // Populated when the caller's own value fails such a type and we delete it;
+    // consulted when a later round reports that same path as `required`, which
+    // would otherwise look repairable right up until the round after.
+    const unfillablePaths: Map<string, ValidationError>[] = originalItems.map(() => new Map<string, ValidationError>());
     // Parallel to `working`. The errors the API reported for this position in
     // the *current* round, reset every round. Non-empty therefore means "still
     // failing right now", which is what decides who gets dropped when we run
@@ -155,6 +161,7 @@ async function cleanAndRetry<T, R>(
         working.splice(i, 1);
         originalAt.splice(i, 1);
         placeholderPaths.splice(i, 1);
+        unfillablePaths.splice(i, 1);
         roundErrors.splice(i, 1);
     };
 
@@ -198,6 +205,7 @@ async function cleanAndRetry<T, R>(
                 working[i],
                 invalid.validationErrors,
                 placeholderPaths[i],
+                unfillablePaths[i],
             );
             if (cleaned === null) {
                 // Report only what actually doomed the item. Logging every
@@ -359,12 +367,14 @@ interface CleanOutcome<T> {
 // item can report *all* the fields standing in its way instead of whichever
 // happened to sort first.
 //
-// Mutates `placeholderPaths` to record any fields we filled in ourselves,
-// so the caller can keep iterating on them across rounds.
+// Mutates `placeholderPaths` to record any fields we filled in ourselves, and
+// `unfillablePaths` to record types we know we can't invent a value for, so the
+// caller can keep both kinds of knowledge across rounds.
 function cleanItemFields<T>(
     item: T,
     validationErrors: ValidationError[],
     placeholderPaths: Set<string>,
+    unfillablePaths: Map<string, ValidationError>,
 ): CleanOutcome<T> {
     // structuredClone so we never mutate the caller's data.
     const cloned = structuredClone(item) as T;
@@ -387,8 +397,19 @@ function cleanItemFields<T>(
         // may be the item root or any object nested inside it.
         if (err.keyword === 'required' && typeof err.params?.missingProperty === 'string') {
             const target = [...path, err.params.missingProperty];
+            const pointer = toJsonPointer(target);
+            // Unless we already know what this path's type is. An earlier round
+            // may have deleted the caller's own value here for failing a type we
+            // can't invent — in which case a placeholder is a dead end, and only
+            // the round *after* this one would say so. Report it now, while the
+            // item is being dropped anyway, instead of leaving it unnamed.
+            const unfillable = unfillablePaths.get(pointer);
+            if (unfillable) {
+                blockingErrors.push(unfillable);
+                continue;
+            }
             if (setAtPath(cloned, target, null)) {
-                placeholderPaths.add(toJsonPointer(target));
+                placeholderPaths.add(pointer);
                 changed = true;
             }
             continue;
@@ -431,6 +452,14 @@ function cleanItemFields<T>(
         // Strip it; if the schema declares it required, the next push will
         // re-add a placeholder.
         if (deleteAtPath(cloned, path)) changed = true;
+
+        // Deleting loses the one thing this error taught us: the type the
+        // schema wants here. Keep it when it's a type we have no placeholder
+        // for, so a `required` error on the same path next round recognises the
+        // dead end. Only `type` qualifies — the expected type is fixed by the
+        // schema, whereas `pattern` / `minLength` / `enum` say nothing certain
+        // about whether our `''` would satisfy them.
+        if (err.keyword === 'type' && !placeholderFor(err).ok) unfillablePaths.set(instancePath, err);
     }
 
     if (blockingErrors.length > 0) return { item: null, blockingErrors };

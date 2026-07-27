@@ -479,6 +479,48 @@ test('the same schema minus its number/boolean requireds heals completely', asyn
     expect(calls[calls.length - 1][0]).toEqual({ title: '', url: '', categories: [], histogram: {} });
 });
 
+test('a required field whose own value failed an unfillable type is named, not silently lost', async () => {
+    // The Google Maps report: `permanentlyClosed: 'rwer'` against a required
+    // boolean. Round 1 deletes the caller's string; round 2 sees only
+    // `required`, which looks repairable — but we already learned the schema
+    // wants a boolean there, so it must be reported with the other blockers
+    // rather than waiting for a round that never comes.
+    const { pushFn } = makeMockPush(requiredOfType(MIXED_REQUIRED));
+    const lines = await captureLogs(async () => {
+        const res = await pushDataWithSchemaRepair(pushFn, [{ isAd: 'rwer' }], { maxAttempts: 10 });
+        expect(res.pushedCount).toBe(0);
+        expect(res.droppedItems[0].errors.map((e) => e.instancePath).sort()).toEqual(['/imagesCount', '/isAd']);
+    });
+    expect(lines[1]).toBe(
+        'pushDataWithSchemaRepair: schema validation failed on attempt 2: 1 invalid item(s); ' +
+            'dropped 1 item(s) on unfixable fields: /imagesCount (type number), /isAd (type boolean); ' +
+            'nothing left to retry.',
+    );
+});
+
+test('a known-unfillable type ends the item on the round it recurs, not the round after', async () => {
+    // Only one field is wrong, so nothing else forces the drop: round 1 deletes
+    // the bad value, round 2 recognises the dead end. Without the carried-over
+    // type it would take a third round to place the null and fail it again.
+    const { pushFn, calls } = makeMockPush(requiredOfType({ isAd: 'boolean' }));
+    const res = await pushDataWithSchemaRepair(pushFn, [{ isAd: 'rwer' }], { maxAttempts: 10 });
+    expect(res.pushedCount).toBe(0);
+    expect(calls.length).toBe(2);
+    expect(res.droppedItems[0].errors).toEqual([
+        { instancePath: '/isAd', keyword: 'type', params: { type: 'boolean' }, message: 'x' },
+    ]);
+});
+
+test('a fillable type is not remembered as a dead end', async () => {
+    // Same shape, but the required field is a string: deleting the caller's bad
+    // value and placeholdering '' is exactly the right outcome, so the type we
+    // learned in round 1 must not block round 2.
+    const { pushFn, calls } = makeMockPush(requiredOfType({ title: 'string' }));
+    const res = await pushDataWithSchemaRepair(pushFn, [{ title: 42 }], { maxAttempts: 10 });
+    expect(res.pushedCount).toBe(1);
+    expect(calls[calls.length - 1][0]).toEqual({ title: '' });
+});
+
 test('a placeholder path is only hopeless when none of its errors offers a fix', async () => {
     // `anyOf` schemas report the composite keyword next to the branch errors
     // that explain it. The `anyOf` entry alone has no placeholder, but the
