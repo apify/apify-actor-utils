@@ -400,6 +400,171 @@ test('drops item when a placeholder constraint has no known fix (pattern)', asyn
     expect(res.droppedItems.length).toBe(1);
 });
 
+// Schema with one required field of every "shape" we care about: strings,
+// arrays and objects can be placeholdered; numbers and booleans cannot. This
+// is the real-world Google Maps case that surfaced the misreporting bug — a
+// batch failing on 40+ required fields where only a couple were hopeless.
+const MIXED_REQUIRED: Record<string, string> = {
+    title: 'string',
+    url: 'string',
+    categories: 'array',
+    histogram: 'object',
+    imagesCount: 'number',
+    isAd: 'boolean',
+};
+
+function hasType(value: unknown, type: string): boolean {
+    switch (type) {
+        case 'array':
+            return Array.isArray(value);
+        case 'object':
+            return value !== null && typeof value === 'object' && !Array.isArray(value);
+        case 'number':
+            return typeof value === 'number';
+        case 'boolean':
+            return typeof value === 'boolean';
+        default:
+            return typeof value === 'string';
+    }
+}
+
+// `{ required: [...fields], properties: { field: { type } } }` — every listed
+// field must be present and of its declared type.
+function requiredOfType(fields: Record<string, string>) {
+    return (item: Item): ValidationError[] | null => {
+        const errors: ValidationError[] = [];
+        for (const [field, type] of Object.entries(fields)) {
+            if (!(field in (item ?? {}))) {
+                errors.push({
+                    instancePath: '',
+                    keyword: 'required',
+                    params: { missingProperty: field },
+                    message: 'x',
+                });
+            } else if (!hasType(item[field], type)) {
+                errors.push({ instancePath: `/${field}`, keyword: 'type', params: { type }, message: 'x' });
+            }
+        }
+        return errors.length > 0 ? errors : null;
+    };
+}
+
+test('a dropped item reports only the fields that blocked it, not the ones repaired along the way', async () => {
+    const { pushFn } = makeMockPush(requiredOfType(MIXED_REQUIRED));
+    const lines = await captureLogs(async () => {
+        const res = await pushDataWithSchemaRepair(pushFn, [{}], { maxAttempts: 10 });
+        expect(res.pushedCount).toBe(0);
+        expect(res.droppedItems.length).toBe(1);
+        // Only the number and the boolean are hopeless. title/url/categories/
+        // histogram were all successfully placeholdered and must not show up.
+        expect(res.droppedItems[0].errors.map((e) => e.instancePath).sort()).toEqual(['/imagesCount', '/isAd']);
+    });
+    // Every blocker is named at once, so one log line tells you the whole
+    // story instead of the first offender in sort order.
+    expect(lines[1]).toBe(
+        'pushDataWithSchemaRepair: schema validation failed on attempt 2: 1 invalid item(s); ' +
+            'dropped 1 item(s) on unfixable fields: /imagesCount (type number), /isAd (type boolean); ' +
+            'nothing left to retry.',
+    );
+});
+
+test('the same schema minus its number/boolean requireds heals completely', async () => {
+    // Sibling of the test above: with nothing hopeless left, every required
+    // field really does get its empty placeholder — '' for strings, [] for
+    // arrays, {} for objects.
+    const { title, url, categories, histogram } = MIXED_REQUIRED;
+    const { pushFn, calls } = makeMockPush(requiredOfType({ title, url, categories, histogram }));
+    const res = await pushDataWithSchemaRepair(pushFn, [{}], { maxAttempts: 10 });
+    expect(res.pushedCount).toBe(1);
+    expect(calls[calls.length - 1][0]).toEqual({ title: '', url: '', categories: [], histogram: {} });
+});
+
+test('a required field whose own value failed an unfillable type is named, not silently lost', async () => {
+    // The Google Maps report: `permanentlyClosed: 'rwer'` against a required
+    // boolean. Round 1 deletes the caller's string; round 2 sees only
+    // `required`, which looks repairable — but we already learned the schema
+    // wants a boolean there, so it must be reported with the other blockers
+    // rather than waiting for a round that never comes.
+    const { pushFn } = makeMockPush(requiredOfType(MIXED_REQUIRED));
+    const lines = await captureLogs(async () => {
+        const res = await pushDataWithSchemaRepair(pushFn, [{ isAd: 'rwer' }], { maxAttempts: 10 });
+        expect(res.pushedCount).toBe(0);
+        expect(res.droppedItems[0].errors.map((e) => e.instancePath).sort()).toEqual(['/imagesCount', '/isAd']);
+    });
+    expect(lines[1]).toBe(
+        'pushDataWithSchemaRepair: schema validation failed on attempt 2: 1 invalid item(s); ' +
+            'dropped 1 item(s) on unfixable fields: /imagesCount (type number), /isAd (type boolean); ' +
+            'nothing left to retry.',
+    );
+});
+
+test('a known-unfillable type ends the item on the round it recurs, not the round after', async () => {
+    // Only one field is wrong, so nothing else forces the drop: round 1 deletes
+    // the bad value, round 2 recognises the dead end. Without the carried-over
+    // type it would take a third round to place the null and fail it again.
+    const { pushFn, calls } = makeMockPush(requiredOfType({ isAd: 'boolean' }));
+    const res = await pushDataWithSchemaRepair(pushFn, [{ isAd: 'rwer' }], { maxAttempts: 10 });
+    expect(res.pushedCount).toBe(0);
+    expect(calls.length).toBe(2);
+    expect(res.droppedItems[0].errors).toEqual([
+        { instancePath: '/isAd', keyword: 'type', params: { type: 'boolean' }, message: 'x' },
+    ]);
+});
+
+test('a fillable type is not remembered as a dead end', async () => {
+    // Same shape, but the required field is a string: deleting the caller's bad
+    // value and placeholdering '' is exactly the right outcome, so the type we
+    // learned in round 1 must not block round 2.
+    const { pushFn, calls } = makeMockPush(requiredOfType({ title: 'string' }));
+    const res = await pushDataWithSchemaRepair(pushFn, [{ title: 42 }], { maxAttempts: 10 });
+    expect(res.pushedCount).toBe(1);
+    expect(calls[calls.length - 1][0]).toEqual({ title: '' });
+});
+
+test('a placeholder path is only hopeless when none of its errors offers a fix', async () => {
+    // `anyOf` schemas report the composite keyword next to the branch errors
+    // that explain it. The `anyOf` entry alone has no placeholder, but the
+    // `type: object` branch does — so the field is fixable, not a blocker.
+    const validate = (item: Item): ValidationError[] | null => {
+        if (!('meta' in (item ?? {}))) {
+            return [{ instancePath: '', keyword: 'required', params: { missingProperty: 'meta' }, message: 'x' }];
+        }
+        const value = item.meta;
+        if (value !== null && typeof value === 'object' && !Array.isArray(value)) return null;
+        return [
+            { instancePath: '/meta', keyword: 'type', params: { type: 'object' }, message: 'x' },
+            { instancePath: '/meta', keyword: 'type', params: { type: 'string' }, message: 'x' },
+            { instancePath: '/meta', keyword: 'anyOf', params: {}, message: 'must match a schema in anyOf' },
+        ];
+    };
+    const { pushFn, calls } = makeMockPush(validate);
+    const res = await pushDataWithSchemaRepair(pushFn, [{ id: 1 }], { maxAttempts: 10 });
+    expect(res.pushedCount).toBe(1);
+    // The first usable branch wins, and the trailing `anyOf` no longer
+    // condemns the field its sibling had just fixed.
+    expect(calls[calls.length - 1][0]).toEqual({ id: 1, meta: {} });
+});
+
+test('null wins between competing placeholder fixes on one path', async () => {
+    // A nullable union reported as separate `anyOf` branches: `null` is the
+    // cleanest placeholder, so it beats the `object` branch listed first.
+    const validate = (item: Item): ValidationError[] | null => {
+        if (!('location' in (item ?? {}))) {
+            return [{ instancePath: '', keyword: 'required', params: { missingProperty: 'location' }, message: 'x' }];
+        }
+        if (item.location === null) return null;
+        return [
+            { instancePath: '/location', keyword: 'type', params: { type: 'object' }, message: 'x' },
+            { instancePath: '/location', keyword: 'type', params: { type: 'null' }, message: 'x' },
+            { instancePath: '/location', keyword: 'anyOf', params: {}, message: 'x' },
+        ];
+    };
+    const { pushFn, calls } = makeMockPush(validate);
+    const res = await pushDataWithSchemaRepair(pushFn, [{ id: 1 }], { maxAttempts: 10 });
+    expect(res.pushedCount).toBe(1);
+    expect(calls[calls.length - 1][0]).toEqual({ id: 1, location: null });
+});
+
 test('user-supplied bad data still gets the field stripped, not placeholder-treated', async () => {
     // Schema: name optional but must be string. age optional integer.
     const validate = (item: Item): ValidationError[] | null => {
@@ -1002,7 +1167,7 @@ test('round log names the offending fields, deduped across items', async () => {
     // occurrences.
     expect(lines[0]).toBe(
         'pushDataWithSchemaRepair: schema validation failed on attempt 1: 2 invalid item(s); ' +
-            'repaired fields: /age (type), /tags/[] (type); retrying with 2 item(s).',
+            'repaired fields: /age (type integer), /tags/[] (type string); retrying with 2 item(s).',
     );
 });
 
@@ -1030,7 +1195,23 @@ test('round log separates dropped items and their unfixable fields', async () =>
     });
     expect(lines[0]).toBe(
         'pushDataWithSchemaRepair: schema validation failed on attempt 1: 1 invalid item(s); ' +
-            'dropped 1 item(s) on unfixable fields: (item root) (type); nothing left to retry.',
+            'dropped 1 item(s) on unfixable fields: (item root) (type object); nothing left to retry.',
+    );
+});
+
+test('round log says so plainly when the API named no usable fields', async () => {
+    const pushFn: PushFn<Item> = async () => {
+        throw fakeSchemaError([{ itemPosition: 0, validationErrors: [] }]);
+    };
+    const lines = await captureLogs(async () => {
+        const res = await pushDataWithSchemaRepair(pushFn, [{ age: 1 }]);
+        expect(res.droppedItems.length).toBe(1);
+    });
+    // No errors to name, so the log doesn't dangle an empty "unfixable
+    // fields:" list.
+    expect(lines[0]).toBe(
+        'pushDataWithSchemaRepair: schema validation failed on attempt 1: 1 invalid item(s); ' +
+            'dropped 1 item(s) the API reported no usable errors for; nothing left to retry.',
     );
 });
 
@@ -1041,7 +1222,7 @@ test('give-up log names the fields that are still failing and what it salvages',
     });
     expect(lines[2].endsWith('attempt cap reached with 2 item(s) left.'), lines[2]).toBe(true);
     expect(lines[3]).toBe(
-        'pushDataWithSchemaRepair: gave up after 3 attempts; dropped 1 item(s) still failing on fields: /c (type); ' +
+        'pushDataWithSchemaRepair: gave up after 3 attempts; dropped 1 item(s) still failing on fields: /c (type string); ' +
             'pushing the 1 valid item(s) left.',
     );
 });
@@ -1062,9 +1243,9 @@ test('field list in the log is capped, with the overflow counted', async () => {
         const res = await pushDataWithSchemaRepair(pushFn, [item]);
         expect(res.pushedCount).toBe(1);
     });
-    expect(lines[0].includes('/f00 (type), /f01 (type)'), lines[0]).toBe(true);
-    expect(lines[0].includes('/f19 (type) (+5 more)'), lines[0]).toBe(true);
-    expect(!lines[0].includes('/f20 (type)'), lines[0]).toBe(true);
+    expect(lines[0].includes('/f00 (type string), /f01 (type string)'), lines[0]).toBe(true);
+    expect(lines[0].includes('/f19 (type string) (+5 more)'), lines[0]).toBe(true);
+    expect(!lines[0].includes('/f20 (type string)'), lines[0]).toBe(true);
 });
 
 test('attemptCount always matches the number of pushFn calls', async () => {
@@ -1183,7 +1364,7 @@ test('log labels collapse array indices at every depth', async () => {
     const lines = await captureLogs(async () => {
         await pushDataWithSchemaRepair(pushFn, [{ rows: [] }], { maxAttempts: 2 });
     });
-    expect(lines[0].includes('/rows/[]/tags/[] (type)'), lines[0]).toBe(true);
+    expect(lines[0].includes('/rows/[]/tags/[] (type string)'), lines[0]).toBe(true);
 });
 
 test('log names an unknown property, not the object it was found on', async () => {
