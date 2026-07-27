@@ -1,9 +1,9 @@
 // CI check: forbid direct calls to `.pushData(...)` anywhere in the repo.
 //
-// safePushData is a library wrapper; callers pass `Actor.pushData` (or any
-// dataset's push function) as `pushFn`. The whole point is to ensure nothing
-// bypasses the wrapper, so a stray `Actor.pushData(items)` inside this repo
-// would defeat that goal.
+// pushDataWithSchemaRepair is a library wrapper; callers pass `Actor.pushData`
+// (or any dataset's push function) as `pushFn`. The whole point is to ensure
+// nothing bypasses the wrapper, so a stray `Actor.pushData(items)` inside this
+// repo would defeat that goal.
 //
 // Exits non-zero (and prints the offending lines) if any file under src/
 // or test/ contains a `.pushData(` call. This script itself, and the
@@ -72,7 +72,7 @@ if (offenders.length === 0) {
 }
 
 console.error('check-pushdata: FAIL — direct .pushData() calls are forbidden.');
-console.error('Wrap every push through safePushData and pass the push function as pushFn.\n');
+console.error('Wrap every push through pushDataWithSchemaRepair and pass the push function as pushFn.\n');
 for (const o of offenders) {
     console.error(`  ${o.file}:${o.line}  ${o.text}`);
 }
