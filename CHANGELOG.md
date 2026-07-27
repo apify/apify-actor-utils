@@ -8,6 +8,7 @@ All notable changes to this project will be documented in this file.
 ### 🚀 Features
 
 - **qc-logging:** Add qc logging and basic type utils ([#3](https://github.com/apify/apify-actor-utils/pull/3)) ([bb9461e](https://github.com/apify/apify-actor-utils/commit/bb9461e5811f0dbf7e49bd9b850ecd66d62a7a04)) by [@JuanGalilea](https://github.com/JuanGalilea)
+- **safePushData:** Detailed error reporting and result tracking ([#4](https://github.com/apify/apify-actor-utils/pull/4)) ([0746676](https://github.com/apify/apify-actor-utils/commit/074667621f23d9faf0276bdb800d7a5be3a6e3e2)) by [@metalwarrior665](https://github.com/metalwarrior665)
 
 ### SafePushData
 
