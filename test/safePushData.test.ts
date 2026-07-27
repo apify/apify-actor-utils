@@ -45,23 +45,94 @@ function makeMockPush(validate: (item: Item) => ValidationError[] | null) {
     return { pushFn, calls };
 }
 
+// Finds fault with the first of these fields still present on the item, so
+// each round deletes one and makes real progress — but the item stays invalid
+// for long enough to exhaust any small `maxAttempts`.
+function neverValid(item: Item): ValidationError[] | null {
+    const field = ['a', 'b', 'c', 'd'].find((f) => f in (item ?? {}));
+    if (field === undefined) return null;
+    return [{ instancePath: `/${field}`, keyword: 'type', params: { type: 'string' }, message: 'never-valid' }];
+}
+
+// Schema: { required: ['name'], properties: { name: { type: 'string' } } } —
+// the two-round repair (placeholder, then satisfy its type).
+function requiredStringName(item: Item): ValidationError[] | null {
+    if (!('name' in (item ?? {}))) {
+        return [{ instancePath: '', keyword: 'required', params: { missingProperty: 'name' }, message: 'x' }];
+    }
+    if (typeof item.name !== 'string') {
+        return [{ instancePath: '/name', keyword: 'type', params: { type: 'string' }, message: 'x' }];
+    }
+    return null;
+}
+
+// Swap console.log for a recorder, run `fn`, restore. Returns every logged
+// line so the assertions can inspect what the wrapper reported.
+async function captureLogs(fn: () => Promise<void>): Promise<string[]> {
+    const lines: string[] = [];
+    const original = console.log;
+    console.log = (...args: unknown[]) => {
+        lines.push(args.join(' '));
+    };
+    try {
+        await fn();
+    } finally {
+        console.log = original;
+    }
+    return lines;
+}
+
 test('isSchemaValidationError recognises the API shape', () => {
-    assert.equal(isSchemaValidationError(null), false);
-    assert.equal(isSchemaValidationError({}), false);
     assert.equal(
         isSchemaValidationError({ type: 'schema-validation-error', statusCode: 400, data: { invalidItems: [] } }),
         true,
     );
-    assert.equal(isSchemaValidationError({ type: 'other', statusCode: 400, data: { invalidItems: [] } }), false);
+    // A real ApifyApiError is an Error with the fields hung off it.
+    assert.equal(isSchemaValidationError(fakeSchemaError([])), true);
+});
+
+test('isSchemaValidationError rejects everything else', () => {
+    const cases: unknown[] = [
+        null,
+        undefined,
+        'schema-validation-error',
+        42,
+        {},
+        new Error('plain'),
+        // Right type, wrong status — a 500 is an outage, not bad data.
+        { type: 'schema-validation-error', statusCode: 500, data: { invalidItems: [] } },
+        // Right status, different failure.
+        { type: 'other', statusCode: 400, data: { invalidItems: [] } },
+        // Envelope we can't drive the repair loop from.
+        { type: 'schema-validation-error', statusCode: 400 },
+        { type: 'schema-validation-error', statusCode: 400, data: {} },
+        { type: 'schema-validation-error', statusCode: 400, data: { invalidItems: 'nope' } },
+    ];
+    for (const value of cases) {
+        assert.equal(isSchemaValidationError(value), false, `expected false for ${JSON.stringify(value)}`);
+    }
+});
+
+test('a rejection that only looks like a schema error is rethrown untouched', async () => {
+    // statusCode 500 with the right `type`: not something we can repair, so
+    // the caller has to see it.
+    const pushFn: PushFn<Item> = async () => {
+        const err = new Error('gateway') as Error & { type: string; statusCode: number; data: unknown };
+        err.type = 'schema-validation-error';
+        err.statusCode = 500;
+        err.data = { invalidItems: [{ itemPosition: 0, validationErrors: [] }] };
+        throw err;
+    };
+    await assert.rejects(async () => safePushData(pushFn, [{ a: 1 }]), /gateway/);
 });
 
 test('happy path: one push, no allocations beyond the result object', async () => {
     const { pushFn, calls } = makeMockPush(() => null);
     const items: Item[] = [{ a: 1 }, { a: 2 }];
     const res = await safePushData(pushFn, items);
-    assert.equal(res.pushed, 2);
-    assert.equal(res.dropped.length, 0);
-    assert.equal(res.attempts, 1);
+    assert.equal(res.pushedCount, 2);
+    assert.equal(res.droppedItems.length, 0);
+    assert.equal(res.attemptCount, 1);
     // The wrapper handed the caller's exact array to pushFn (same reference).
     // The mock snapshots its argument so we can only check shape, but the
     // count proves the happy path didn't copy/wrap.
@@ -89,8 +160,8 @@ test('deletes invalid field, then retries successfully', async () => {
         { name: 'Alice', age: 30 },
         { name: 'Bob', age: 'old' },
     ]);
-    assert.equal(res.pushed, 2);
-    assert.equal(res.dropped.length, 0);
+    assert.equal(res.pushedCount, 2);
+    assert.equal(res.droppedItems.length, 0);
     assert.deepEqual(calls[1][1], { name: 'Bob' });
 });
 
@@ -119,8 +190,8 @@ test('placeholders a missing required field, then satisfies the type', async () 
     };
     const { pushFn, calls } = makeMockPush(validate);
     const res = await safePushData(pushFn, { age: 30 });
-    assert.equal(res.pushed, 1);
-    assert.equal(res.dropped.length, 0);
+    assert.equal(res.pushedCount, 1);
+    assert.equal(res.droppedItems.length, 0);
     // Final pushed item: name was placeholder'd to null, then upgraded to ''.
     assert.deepEqual(calls[calls.length - 1][0], { age: 30, name: '' });
 });
@@ -163,9 +234,9 @@ test('drops item when a placeholder field carries a minLength it cannot satisfy'
     };
     const { pushFn } = makeMockPush(validate);
     const res = await safePushData(pushFn, { age: 30 }, { maxAttempts: 10 });
-    assert.equal(res.pushed, 0);
-    assert.equal(res.dropped.length, 1);
-    assert.deepEqual(res.dropped[0].item, { age: 30 });
+    assert.equal(res.pushedCount, 0);
+    assert.equal(res.droppedItems.length, 1);
+    assert.deepEqual(res.droppedItems[0].item, { age: 30 });
 });
 
 test('drops item on enum constraint instead of fabricating the first allowed value', async () => {
@@ -208,8 +279,8 @@ test('drops item on enum constraint instead of fabricating the first allowed val
     };
     const { pushFn } = makeMockPush(validate);
     const res = await safePushData(pushFn, { name: 'x' }, { maxAttempts: 10 });
-    assert.equal(res.pushed, 0);
-    assert.equal(res.dropped.length, 1);
+    assert.equal(res.pushedCount, 0);
+    assert.equal(res.droppedItems.length, 1);
 });
 
 test('drops item on format=email instead of fabricating a fake address', async () => {
@@ -250,8 +321,8 @@ test('drops item on format=email instead of fabricating a fake address', async (
     };
     const { pushFn } = makeMockPush(validate);
     const res = await safePushData(pushFn, { name: 'x' }, { maxAttempts: 10 });
-    assert.equal(res.pushed, 0);
-    assert.equal(res.dropped.length, 1);
+    assert.equal(res.pushedCount, 0);
+    assert.equal(res.droppedItems.length, 1);
 });
 
 test('required field with a union type that allows null is placeholder-filled with null', async () => {
@@ -284,8 +355,8 @@ test('required field with a union type that allows null is placeholder-filled wi
     };
     const { pushFn, calls } = makeMockPush(validate);
     const res = await safePushData(pushFn, { name: 'x' });
-    assert.equal(res.pushed, 1);
-    assert.equal(res.dropped.length, 0);
+    assert.equal(res.pushedCount, 1);
+    assert.equal(res.droppedItems.length, 0);
     assert.deepEqual(calls[calls.length - 1][0], { name: 'x', note: null });
 });
 
@@ -323,8 +394,8 @@ test('drops item when a placeholder constraint has no known fix (pattern)', asyn
     };
     const { pushFn } = makeMockPush(validate);
     const res = await safePushData(pushFn, [{ name: 'x' }], { maxAttempts: 10 });
-    assert.equal(res.pushed, 0);
-    assert.equal(res.dropped.length, 1);
+    assert.equal(res.pushedCount, 0);
+    assert.equal(res.droppedItems.length, 1);
 });
 
 test('user-supplied bad data still gets the field stripped, not placeholder-treated', async () => {
@@ -343,7 +414,7 @@ test('user-supplied bad data still gets the field stripped, not placeholder-trea
     };
     const { pushFn, calls } = makeMockPush(validate);
     const res = await safePushData(pushFn, [{ name: 'Bob', age: 'old' }]);
-    assert.equal(res.pushed, 1);
+    assert.equal(res.pushedCount, 1);
     // age was user-supplied (not a placeholder we set), so it got deleted
     // rather than coerced to 0.
     assert.deepEqual(calls[calls.length - 1][0], { name: 'Bob' });
@@ -370,7 +441,7 @@ test('removes bad element from array via /tags/0 path', async () => {
     };
     const { pushFn, calls } = makeMockPush(validate);
     const res = await safePushData(pushFn, [{ name: 'Eve', tags: [42, 'ok', 99] }]);
-    assert.equal(res.pushed, 1);
+    assert.equal(res.pushedCount, 1);
     const finalPushed = calls[calls.length - 1][0];
     assert.equal(finalPushed.name, 'Eve');
     assert.ok((finalPushed.tags as unknown[]).every((t) => typeof t === 'string'));
@@ -387,9 +458,310 @@ test('single object input: dropped on missing-required, no crash', async () => {
         },
     ]);
     const res = await safePushData(pushFn, { age: 99 });
-    assert.equal(res.pushed, 0);
-    assert.equal(res.dropped.length, 1);
-    assert.deepEqual(res.dropped[0].item, { age: 99 });
+    assert.equal(res.pushedCount, 0);
+    assert.equal(res.droppedItems.length, 1);
+    assert.deepEqual(res.droppedItems[0].item, { age: 99 });
+});
+
+test('pushResult carries whatever pushFn resolved to', async () => {
+    const pushFn: PushFn<Item, { stored: number }> = async (batch) => ({ stored: batch.length });
+    const res = await safePushData(pushFn, [{ a: 1 }, { a: 2 }]);
+    assert.deepEqual(res.pushResult, { stored: 2 });
+});
+
+test('pushResult comes from the push that actually succeeded, not an earlier one', async () => {
+    let call = 0;
+    const pushFn: PushFn<Item, string> = async (batch) => {
+        call++;
+        if (call === 1) {
+            throw fakeSchemaError([
+                {
+                    itemPosition: 1,
+                    validationErrors: [
+                        { instancePath: '/age', keyword: 'type', params: { type: 'integer' }, message: 'x' },
+                    ],
+                },
+            ]);
+        }
+        return `stored ${batch.length} on call ${call}`;
+    };
+    const res = await safePushData(pushFn, [{ name: 'A' }, { name: 'B', age: 'old' }]);
+    assert.equal(res.pushResult, 'stored 2 on call 2');
+    assert.equal(res.attemptCount, 2);
+});
+
+test('pushResult is undefined when nothing was ever pushed', async () => {
+    const { pushFn } = makeMockPush(() => [
+        { instancePath: '', keyword: 'type', params: { type: 'object' }, message: 'x' },
+    ]);
+    const res = await safePushData(pushFn, [{ a: 1 }]);
+    assert.equal(res.pushedCount, 0);
+    assert.equal(res.pushResult, undefined);
+});
+
+test('a nested required field is placeholder-filled, not nuked along with its parent', async () => {
+    // Schema: address is an object requiring a string `city`. The naive
+    // fallback (strip the field at instancePath) would delete the whole
+    // address object; the placeholder keeps the rest of it.
+    const validate = (item: Item): ValidationError[] | null => {
+        const address = item?.address as Record<string, unknown> | undefined;
+        if (!address) return null;
+        if (!('city' in address)) {
+            return [
+                {
+                    instancePath: '/address',
+                    keyword: 'required',
+                    params: { missingProperty: 'city' },
+                    message: "must have required property 'city'",
+                },
+            ];
+        }
+        if (typeof address.city !== 'string') {
+            return [
+                {
+                    instancePath: '/address/city',
+                    keyword: 'type',
+                    params: { type: 'string' },
+                    message: 'must be string',
+                },
+            ];
+        }
+        return null;
+    };
+    const { pushFn, calls } = makeMockPush(validate);
+    const res = await safePushData(pushFn, [{ address: { street: 'Main 1' } }]);
+    assert.equal(res.pushedCount, 1);
+    assert.deepEqual(calls[calls.length - 1][0], { address: { street: 'Main 1', city: '' } });
+});
+
+test('sibling array elements are removed in one round, without taking a valid one with them', async () => {
+    // Errors arrive as /tags/0 and /tags/1. Splicing them front-to-back would
+    // shift the array under the second path and delete the valid 'ok'.
+    const validate = (item: Item): ValidationError[] | null => {
+        if (!Array.isArray(item?.tags)) return null;
+        const errors = (item.tags as unknown[]).flatMap((t, i) =>
+            typeof t === 'string'
+                ? []
+                : [{ instancePath: `/tags/${i}`, keyword: 'type', params: { type: 'string' }, message: 'x' }],
+        );
+        return errors.length > 0 ? errors : null;
+    };
+    const { pushFn, calls } = makeMockPush(validate);
+    const res = await safePushData(pushFn, [{ tags: [1, 2, 'ok'] }]);
+    assert.equal(res.pushedCount, 1);
+    assert.deepEqual(calls[calls.length - 1][0], { tags: ['ok'] });
+    // Both bad elements went in the same round: one retry, not two.
+    assert.equal(res.attemptCount, 2);
+});
+
+test('strips an unknown property reported at the root', async () => {
+    const validate = (item: Item): ValidationError[] | null =>
+        'junk' in (item ?? {})
+            ? [
+                  {
+                      instancePath: '',
+                      keyword: 'additionalProperties',
+                      params: { additionalProperty: 'junk' },
+                      message: 'must NOT have additional properties',
+                  },
+              ]
+            : null;
+    const { pushFn, calls } = makeMockPush(validate);
+    const res = await safePushData(pushFn, [{ name: 'A', junk: 1 }]);
+    assert.equal(res.pushedCount, 1);
+    assert.deepEqual(calls[calls.length - 1][0], { name: 'A' });
+});
+
+test('strips an unknown property nested inside the item', async () => {
+    // instancePath points at the parent object; the offending key is in params.
+    const validate = (item: Item): ValidationError[] | null => {
+        const meta = item?.meta as Record<string, unknown> | undefined;
+        return meta && 'junk' in meta
+            ? [
+                  {
+                      instancePath: '/meta',
+                      keyword: 'additionalProperties',
+                      params: { additionalProperty: 'junk' },
+                      message: 'must NOT have additional properties',
+                  },
+              ]
+            : null;
+    };
+    const { pushFn, calls } = makeMockPush(validate);
+    const res = await safePushData(pushFn, [{ meta: { source: 'web', junk: 1 } }]);
+    assert.equal(res.pushedCount, 1);
+    assert.deepEqual(calls[calls.length - 1][0], { meta: { source: 'web' } });
+});
+
+test('applies every kind of error reported for an item in one round', async () => {
+    // required + additionalProperties + a plain type violation, all at once.
+    const validate = (item: Item): ValidationError[] | null => {
+        const errors: ValidationError[] = [];
+        if (!('name' in (item ?? {}))) {
+            errors.push({ instancePath: '', keyword: 'required', params: { missingProperty: 'name' }, message: 'x' });
+        } else if (typeof item.name !== 'string') {
+            errors.push({ instancePath: '/name', keyword: 'type', params: { type: 'string' }, message: 'x' });
+        }
+        if ('junk' in (item ?? {})) {
+            errors.push({
+                instancePath: '',
+                keyword: 'additionalProperties',
+                params: { additionalProperty: 'junk' },
+                message: 'x',
+            });
+        }
+        if (item?.age != null && typeof item.age !== 'number') {
+            errors.push({ instancePath: '/age', keyword: 'type', params: { type: 'integer' }, message: 'x' });
+        }
+        return errors.length > 0 ? errors : null;
+    };
+    const { pushFn, calls } = makeMockPush(validate);
+    const res = await safePushData(pushFn, [{ junk: 1, age: 'old' }]);
+    assert.equal(res.pushedCount, 1);
+    // Round 1 handled all three; round 2 only had to upgrade the placeholder.
+    assert.deepEqual(calls[1][0], { name: null });
+    assert.deepEqual(calls[calls.length - 1][0], { name: '' });
+    assert.equal(res.attemptCount, 3);
+});
+
+test('repairs deeper paths and higher indices before the ones that would shift them', async () => {
+    // `/rows/0` (delete the row) and `/rows/2/name` (delete a field two levels
+    // down) arrive together. Splicing row 0 first would leave the second path
+    // pointing past the end of the array.
+    const validate = (item: Item): ValidationError[] | null => {
+        const rows = item?.rows as Record<string, unknown>[] | undefined;
+        if (!rows) return null;
+        const errors: ValidationError[] = [];
+        rows.forEach((row, i) => {
+            if (row.bad) {
+                errors.push({ instancePath: `/rows/${i}`, keyword: 'type', params: { type: 'object' }, message: 'x' });
+            } else if ('name' in row && typeof row.name !== 'string') {
+                errors.push({
+                    instancePath: `/rows/${i}/name`,
+                    keyword: 'type',
+                    params: { type: 'string' },
+                    message: 'x',
+                });
+            }
+        });
+        return errors.length > 0 ? errors : null;
+    };
+    const { pushFn, calls } = makeMockPush(validate);
+    const res = await safePushData(pushFn, [{ rows: [{ bad: true }, { id: 1 }, { id: 2, name: 5 }] }]);
+    assert.equal(res.pushedCount, 1);
+    assert.deepEqual(calls[calls.length - 1][0], { rows: [{ id: 1 }, { id: 2 }] });
+    // One retry, not two: both repairs landed in the same round.
+    assert.equal(res.attemptCount, 2);
+});
+
+test('placeholder paths survive JSON Pointer escaping', async () => {
+    // A field literally named `a/b` is reported as `/a~1b`. The placeholder we
+    // record has to use the same encoding or the follow-up type error looks
+    // like user data and the field gets deleted (re-triggering `required`).
+    const validate = (item: Item): ValidationError[] | null => {
+        if (!('a/b' in (item ?? {}))) {
+            return [{ instancePath: '', keyword: 'required', params: { missingProperty: 'a/b' }, message: 'x' }];
+        }
+        if (typeof item['a/b'] !== 'string') {
+            return [{ instancePath: '/a~1b', keyword: 'type', params: { type: 'string' }, message: 'x' }];
+        }
+        return null;
+    };
+    const { pushFn, calls } = makeMockPush(validate);
+    const lines = await captureLogs(async () => {
+        const res = await safePushData(pushFn, [{ id: 1 }]);
+        assert.equal(res.pushedCount, 1);
+        assert.equal(res.attemptCount, 3);
+    });
+    assert.deepEqual(calls[calls.length - 1][0], { id: 1, 'a/b': '' });
+    assert.ok(lines[0].includes('/a~1b (required)'), lines[0]);
+});
+
+test('per-item state follows its item when a lower position is dropped', async () => {
+    // Item 1 gets a placeholder in the same round item 0 is dropped, so it
+    // shifts down to position 0. If the placeholder set didn't shift with it,
+    // the follow-up type error would delete the field and loop on `required`.
+    const validate = (item: Item): ValidationError[] | null => {
+        if (item?.kill) return [{ instancePath: '', keyword: 'type', params: { type: 'object' }, message: 'x' }];
+        if (!('name' in (item ?? {}))) {
+            return [{ instancePath: '', keyword: 'required', params: { missingProperty: 'name' }, message: 'x' }];
+        }
+        if (typeof item.name !== 'string') {
+            return [{ instancePath: '/name', keyword: 'type', params: { type: 'string' }, message: 'x' }];
+        }
+        return null;
+    };
+    const { pushFn, calls } = makeMockPush(validate);
+    const res = await safePushData(pushFn, [{ kill: true }, { id: 7 }]);
+    assert.equal(res.pushedCount, 1);
+    assert.equal(res.droppedItems.length, 1);
+    assert.deepEqual(res.droppedItems[0].item, { kill: true });
+    assert.deepEqual(calls[calls.length - 1], [{ id: 7, name: '' }]);
+    assert.equal(res.attemptCount, 3);
+});
+
+test('a dropped item reports the caller original, not the half-cleaned copy', async () => {
+    // /age is stripped in round 1; the item is only dropped in round 2, and
+    // the report still has to show what the caller handed us.
+    const validate = (item: Item): ValidationError[] | null =>
+        'age' in (item ?? {})
+            ? [{ instancePath: '/age', keyword: 'type', params: { type: 'integer' }, message: 'x' }]
+            : [{ instancePath: '', keyword: 'type', params: { type: 'object' }, message: 'x' }];
+    const { pushFn } = makeMockPush(validate);
+    const res = await safePushData(pushFn, [{ name: 'x', age: 'old' }]);
+    assert.equal(res.pushedCount, 0);
+    assert.deepEqual(res.droppedItems[0].item, { name: 'x', age: 'old' });
+    assert.equal(res.attemptCount, 2);
+});
+
+test('several items dropped in one round keep the surviving positions straight', async () => {
+    const validate = (item: Item): ValidationError[] | null =>
+        'bad' in (item ?? {})
+            ? [{ instancePath: '', keyword: 'type', params: { type: 'object' }, message: 'x' }]
+            : null;
+    const { pushFn, calls } = makeMockPush(validate);
+    const res = await safePushData(pushFn, [{ keep: 1 }, { bad: 1 }, { keep: 2 }, { bad: 2 }]);
+    assert.equal(res.pushedCount, 2);
+    // Dropped highest-position-first, so the splices never shift a position
+    // that's still to be processed.
+    assert.deepEqual(
+        res.droppedItems.map((d) => d.item),
+        [{ bad: 2 }, { bad: 1 }],
+    );
+    assert.deepEqual(calls[1], [{ keep: 1 }, { keep: 2 }]);
+});
+
+test('an item that is not an object is dropped instead of retried forever', async () => {
+    // There's nowhere to put a placeholder on a string, so no round can ever
+    // change it — dropping on the first round is the only progress available.
+    let calls = 0;
+    const pushFn: PushFn<string> = async () => {
+        calls++;
+        throw fakeSchemaError([
+            {
+                itemPosition: 0,
+                validationErrors: [
+                    { instancePath: '', keyword: 'required', params: { missingProperty: 'name' }, message: 'x' },
+                ],
+            },
+        ]);
+    };
+    const res = await safePushData(pushFn, ['not an object'], { maxAttempts: 5 });
+    assert.equal(calls, 1);
+    assert.equal(res.attemptCount, 1);
+    assert.deepEqual(res.droppedItems, [{ item: 'not an object', errors: res.droppedItems[0].errors }]);
+});
+
+test('an invalid item the API gave no errors for is dropped, not looped on', async () => {
+    let calls = 0;
+    const pushFn: PushFn<Item> = async () => {
+        calls++;
+        throw fakeSchemaError([{ itemPosition: 0, validationErrors: [] }]);
+    };
+    const res = await safePushData(pushFn, [{ a: 1 }], { maxAttempts: 5 });
+    assert.equal(calls, 1);
+    assert.equal(res.droppedItems.length, 1);
+    assert.deepEqual(res.droppedItems[0].errors, []);
 });
 
 test('non-schema error is rethrown', async () => {
@@ -407,8 +779,8 @@ test('empty array input: returns immediately (but pushFn is still called once)',
         called++;
     };
     const res = await safePushData(pushFn, []);
-    assert.equal(res.pushed, 0);
-    assert.equal(res.attempts, 1);
+    assert.equal(res.pushedCount, 0);
+    assert.equal(res.attemptCount, 1);
     // Happy path goes through pushFn once even on []; this is intentional —
     // the wrapper doesn't second-guess what `pushFn([])` means for the caller.
     assert.equal(called, 1);
@@ -425,55 +797,155 @@ test('original input array is not mutated', async () => {
 });
 
 test('gives up after maxAttempts with remaining items still failing', async () => {
-    // Validator always fails on items it sees — but never on the same field
-    // we just deleted. We force a runaway loop by reporting a non-root field
-    // error and then keep failing.
-    let calls = 0;
-    const pushFn: PushFn<Item> = async (batch) => {
-        calls++;
-        throw fakeSchemaError(
-            batch.map((_, i) => ({
-                itemPosition: i,
-                validationErrors: [
-                    {
-                        instancePath: `/extra${calls}`,
-                        keyword: 'type',
-                        params: { type: 'string' },
-                        message: 'forever-failing',
-                    },
-                ],
-            })),
-        );
-    };
-    const res = await safePushData(pushFn, [{ name: 'X' }], { maxAttempts: 3 });
-    assert.equal(res.pushed, 0);
-    assert.equal(res.dropped.length, 1);
-    assert.equal(res.attempts, 3);
+    const { pushFn } = makeMockPush(neverValid);
+    const res = await safePushData(pushFn, [{ a: 1, b: 2, c: 3, d: 4 }], { maxAttempts: 3 });
+    assert.equal(res.pushedCount, 0);
+    assert.equal(res.droppedItems.length, 1);
+    assert.equal(res.attemptCount, 3);
+    assert.equal(res.pushResult, undefined);
 });
 
 test('give-up drop reports the last validation errors, not an empty array', async () => {
-    let calls = 0;
-    const pushFn: PushFn<Item> = async (batch) => {
-        calls++;
-        throw fakeSchemaError(
-            batch.map((_, i) => ({
-                itemPosition: i,
-                validationErrors: [
-                    {
-                        instancePath: `/extra${calls}`,
-                        keyword: 'type',
-                        params: { type: 'string' },
-                        message: 'forever-failing',
-                    },
-                ],
-            })),
-        );
-    };
-    const res = await safePushData(pushFn, [{ name: 'X' }], { maxAttempts: 3 });
-    assert.equal(res.dropped.length, 1);
-    assert.deepEqual(res.dropped[0].errors, [
-        { instancePath: '/extra3', keyword: 'type', params: { type: 'string' }, message: 'forever-failing' },
+    const { pushFn } = makeMockPush(neverValid);
+    const res = await safePushData(pushFn, [{ a: 1, b: 2, c: 3, d: 4 }], { maxAttempts: 3 });
+    assert.equal(res.droppedItems.length, 1);
+    // /a went on attempt 1 and /b on attempt 2, so /c is what was still
+    // broken when the cap hit.
+    assert.deepEqual(res.droppedItems[0].errors, [
+        { instancePath: '/c', keyword: 'type', params: { type: 'string' }, message: 'never-valid' },
     ]);
+});
+
+test('hitting the cap does not throw away the items that were always valid', async () => {
+    // The whole point of the wrapper: one incurable item must not take the
+    // rest of the batch down with it. A rejected push stores nothing, so the
+    // survivors get a final push of their own once we stop repairing.
+    const { pushFn, calls } = makeMockPush(neverValid);
+    const res = await safePushData(pushFn, [{ ok: 1 }, { a: 1, b: 2, c: 3, d: 4 }, { ok: 2 }], { maxAttempts: 3 });
+    assert.equal(res.pushedCount, 2);
+    assert.equal(res.droppedItems.length, 1);
+    assert.deepEqual(res.droppedItems[0].item, { a: 1, b: 2, c: 3, d: 4 });
+    // Three repair attempts plus the final push of the survivors.
+    assert.equal(res.attemptCount, 4);
+    assert.deepEqual(calls[3], [{ ok: 1 }, { ok: 2 }]);
+});
+
+test('item whose errors are all unactionable is dropped instead of burning attempts', async () => {
+    // Every error points at a path the item doesn't have, so nothing we do
+    // changes the item — re-pushing would reproduce the identical error.
+    const pushFn: PushFn<Item> = async (batch) =>
+        Promise.reject(
+            fakeSchemaError(
+                batch.map((_, i) => ({
+                    itemPosition: i,
+                    validationErrors: [
+                        { instancePath: '/nope', keyword: 'type', params: { type: 'string' }, message: 'x' },
+                    ],
+                })),
+            ),
+        );
+    const res = await safePushData(pushFn, [{ name: 'X' }], { maxAttempts: 5 });
+    assert.equal(res.droppedItems.length, 1);
+    assert.equal(res.attemptCount, 1);
+});
+
+test('the salvage push supplies the pushResult', async () => {
+    const pushFn: PushFn<Item, string> = async (batch) => {
+        const invalid = batch.flatMap((item, i) => {
+            const errors = neverValid(item);
+            return errors ? [{ itemPosition: i, validationErrors: errors }] : [];
+        });
+        if (invalid.length > 0) throw fakeSchemaError(invalid);
+        return `stored ${batch.length}`;
+    };
+    const res = await safePushData(pushFn, [{ ok: 1 }, { a: 1, b: 2, c: 3, d: 4 }], { maxAttempts: 3 });
+    assert.equal(res.pushResult, 'stored 1');
+    assert.equal(res.pushedCount, 1);
+    assert.equal(res.attemptCount, 4);
+});
+
+test('when even the salvage push is rejected, nothing counts as pushed', async () => {
+    // A rejected push stores no items at all, so a survivor that the API
+    // turns on at the last moment has to be reported dropped, not pushed.
+    let call = 0;
+    const pushFn: PushFn<Item> = async (batch) => {
+        call++;
+        const invalid = batch.map((item, i) => {
+            const errors = neverValid(item) ?? [
+                { instancePath: '/ok', keyword: 'type', params: { type: 'string' }, message: 'late' },
+            ];
+            // Everything is fine until the salvage push, which rejects the lot.
+            return call === 4 || neverValid(item) ? { itemPosition: i, validationErrors: errors } : null;
+        });
+        const invalidItems = invalid.filter((x) => x !== null);
+        if (invalidItems.length > 0) throw fakeSchemaError(invalidItems);
+    };
+    const lines = await captureLogs(async () => {
+        const res = await safePushData(pushFn, [{ ok: 1 }, { a: 1, b: 2, c: 3, d: 4 }], { maxAttempts: 3 });
+        assert.equal(res.pushedCount, 0);
+        assert.equal(res.attemptCount, 4);
+        assert.equal(res.pushResult, undefined);
+        // The incurable item went first, at the cap; the survivor went with
+        // the failed salvage push, carrying the error that killed it.
+        assert.deepEqual(res.droppedItems[0].item, { a: 1, b: 2, c: 3, d: 4 });
+        assert.deepEqual(res.droppedItems[1].item, { ok: 1 });
+        assert.deepEqual(res.droppedItems[1].errors, [
+            { instancePath: '/ok', keyword: 'type', params: { type: 'string' }, message: 'late' },
+        ]);
+    });
+    assert.equal(lines[lines.length - 1], 'safePushData: final push of 1 item(s) was rejected too; dropping them.');
+});
+
+test('maxAttempts: 1 leaves no room to repair but still gets the valid items in', async () => {
+    const validate = (item: Item): ValidationError[] | null =>
+        'bad' in (item ?? {})
+            ? [{ instancePath: '', keyword: 'type', params: { type: 'object' }, message: 'x' }]
+            : null;
+    const { pushFn, calls } = makeMockPush(validate);
+    const res = await safePushData(pushFn, [{ ok: 1 }, { bad: 1 }], { maxAttempts: 1 });
+    assert.equal(res.pushedCount, 1);
+    assert.equal(res.droppedItems.length, 1);
+    assert.equal(res.attemptCount, 2);
+    assert.deepEqual(calls[1], [{ ok: 1 }]);
+});
+
+test('a non-schema error from a retry push is rethrown', async () => {
+    let call = 0;
+    const pushFn: PushFn<Item> = async () => {
+        call++;
+        if (call === 1) {
+            throw fakeSchemaError([
+                {
+                    itemPosition: 0,
+                    validationErrors: [
+                        { instancePath: '/age', keyword: 'type', params: { type: 'integer' }, message: 'x' },
+                    ],
+                },
+            ]);
+        }
+        throw new Error('boom on retry');
+    };
+    await assert.rejects(async () => safePushData(pushFn, [{ age: 'old' }]), /boom on retry/);
+});
+
+test('a non-schema error from the salvage push is rethrown', async () => {
+    let call = 0;
+    const pushFn: PushFn<Item> = async () => {
+        call++;
+        if (call === 1) {
+            throw fakeSchemaError([
+                {
+                    itemPosition: 1,
+                    validationErrors: [{ instancePath: '', keyword: 'type', params: { type: 'object' }, message: 'x' }],
+                },
+            ]);
+        }
+        throw new Error('boom on salvage');
+    };
+    await assert.rejects(
+        async () => safePushData(pushFn, [{ ok: 1 }, { bad: 1 }], { maxAttempts: 1 }),
+        /boom on salvage/,
+    );
 });
 
 test('maxAttempts <= 0 is clamped to 1 (attempts always matches real pushFn calls)', async () => {
@@ -491,7 +963,275 @@ test('maxAttempts <= 0 is clamped to 1 (attempts always matches real pushFn call
     };
     const res = await safePushData(pushFn, [{ age: 30 }], { maxAttempts: 0 });
     assert.equal(calls, 1);
-    assert.equal(res.attempts, 1);
+    assert.equal(res.attemptCount, 1);
+});
+
+test('round log names the offending fields, deduped across items', async () => {
+    const validate = (item: Item): ValidationError[] | null => {
+        const errors: ValidationError[] = [];
+        if (item?.age != null && typeof item.age !== 'number') {
+            errors.push({ instancePath: '/age', keyword: 'type', params: { type: 'integer' }, message: 'x' });
+        }
+        if (Array.isArray(item?.tags)) {
+            (item.tags as unknown[]).forEach((t, i) => {
+                if (typeof t !== 'string') {
+                    errors.push({
+                        instancePath: `/tags/${i}`,
+                        keyword: 'type',
+                        params: { type: 'string' },
+                        message: 'x',
+                    });
+                }
+            });
+        }
+        return errors.length > 0 ? errors : null;
+    };
+    const { pushFn } = makeMockPush(validate);
+    const lines = await captureLogs(async () => {
+        const res = await safePushData(pushFn, [
+            { name: 'a', age: 'old', tags: [1, 'ok'] },
+            { name: 'b', age: 'x', tags: ['ok', 2] },
+        ]);
+        assert.equal(res.pushedCount, 2);
+    });
+    assert.equal(lines.length, 1);
+    // Both items hit /age, and the bad array elements (at different indices)
+    // collapse into one `/tags/[]` entry — the log reports fields, not
+    // occurrences.
+    assert.equal(
+        lines[0],
+        'safePushData: schema validation failed on attempt 1: 2 invalid item(s); ' +
+            'repaired fields: /age (type), /tags/[] (type); retrying with 2 item(s).',
+    );
+});
+
+test('round log reports a missing required field under its own path', async () => {
+    const validate = (item: Item): ValidationError[] | null =>
+        item?.name === undefined
+            ? [{ instancePath: '', keyword: 'required', params: { missingProperty: 'name' }, message: 'x' }]
+            : null;
+    const { pushFn } = makeMockPush(validate);
+    const lines = await captureLogs(async () => {
+        await safePushData(pushFn, [{ age: 1 }]);
+    });
+    assert.ok(lines[0].includes('repaired fields: /name (required)'), lines[0]);
+});
+
+test('round log separates dropped items and their unfixable fields', async () => {
+    // Root-level `type` error: the item itself is the wrong shape, so it is
+    // dropped rather than cleaned.
+    const { pushFn } = makeMockPush(() => [
+        { instancePath: '', keyword: 'type', params: { type: 'object' }, message: 'x' },
+    ]);
+    const lines = await captureLogs(async () => {
+        const res = await safePushData(pushFn, [{ age: 1 }]);
+        assert.equal(res.droppedItems.length, 1);
+    });
+    assert.equal(
+        lines[0],
+        'safePushData: schema validation failed on attempt 1: 1 invalid item(s); ' +
+            'dropped 1 item(s) on unfixable fields: (item root) (type); nothing left to retry.',
+    );
+});
+
+test('give-up log names the fields that are still failing and what it salvages', async () => {
+    const { pushFn } = makeMockPush(neverValid);
+    const lines = await captureLogs(async () => {
+        await safePushData(pushFn, [{ ok: 1 }, { a: 1, b: 2, c: 3, d: 4 }], { maxAttempts: 3 });
+    });
+    assert.ok(lines[2].endsWith('attempt cap reached with 2 item(s) left.'), lines[2]);
+    assert.equal(
+        lines[3],
+        'safePushData: gave up after 3 attempts; dropped 1 item(s) still failing on fields: /c (type); ' +
+            'pushing the 1 valid item(s) left.',
+    );
+});
+
+test('field list in the log is capped, with the overflow counted', async () => {
+    // 25 distinct bad fields on one item; only the first 20 are spelled out.
+    const badFields = Array.from({ length: 25 }, (_, i) => `f${String(i).padStart(2, '0')}`);
+    const validate = (item: Item): ValidationError[] | null => {
+        const errors = badFields
+            .filter((f) => f in (item ?? {}))
+            .map((f) => ({ instancePath: `/${f}`, keyword: 'type', params: { type: 'string' }, message: 'x' }));
+        return errors.length > 0 ? errors : null;
+    };
+    const { pushFn } = makeMockPush(validate);
+    const item: Item = {};
+    for (const f of badFields) item[f] = 1;
+    const lines = await captureLogs(async () => {
+        const res = await safePushData(pushFn, [item]);
+        assert.equal(res.pushedCount, 1);
+    });
+    assert.ok(lines[0].includes('/f00 (type), /f01 (type)'), lines[0]);
+    assert.ok(lines[0].includes('/f19 (type) (+5 more)'), lines[0]);
+    assert.ok(!lines[0].includes('/f20 (type)'), lines[0]);
+});
+
+test('attemptCount always matches the number of pushFn calls', async () => {
+    const scenarios: {
+        label: string;
+        validate: (item: Item) => ValidationError[] | null;
+        items: Item[];
+        options?: { maxAttempts?: number };
+    }[] = [
+        { label: 'clean batch', validate: () => null, items: [{ a: 1 }] },
+        {
+            label: 'one field stripped',
+            validate: (item) =>
+                typeof item?.age === 'string'
+                    ? [{ instancePath: '/age', keyword: 'type', params: { type: 'integer' }, message: 'x' }]
+                    : null,
+            items: [{ age: 'old' }],
+        },
+        { label: 'required then type', validate: requiredStringName, items: [{ id: 1 }] },
+        {
+            label: 'cap plus salvage push',
+            validate: neverValid,
+            items: [{ ok: 1 }, { a: 1, b: 2, c: 3, d: 4 }],
+            options: { maxAttempts: 3 },
+        },
+        {
+            label: 'everything dropped on the first round',
+            validate: () => [{ instancePath: '', keyword: 'type', params: { type: 'object' }, message: 'x' }],
+            items: [{ a: 1 }],
+        },
+    ];
+    for (const scenario of scenarios) {
+        const { pushFn, calls } = makeMockPush(scenario.validate);
+        const res = await safePushData(pushFn, scenario.items, scenario.options);
+        assert.equal(res.attemptCount, calls.length, scenario.label);
+    }
+});
+
+test('mixed batch: keeps the good, repairs the fixable, drops the hopeless', async () => {
+    // Schema: `name` and `role` required, role constrained to an enum, age an
+    // integer. A missing `role` is unfixable — we won't invent an enum value —
+    // while a missing `name` is just a placeholder away from valid.
+    const roles = ['admin', 'user'];
+    const validate = (item: Item): ValidationError[] | null => {
+        const errors: ValidationError[] = [];
+        for (const field of ['name', 'role']) {
+            if (!(field in (item ?? {}))) {
+                errors.push({
+                    instancePath: '',
+                    keyword: 'required',
+                    params: { missingProperty: field },
+                    message: 'x',
+                });
+            } else if (typeof item[field] !== 'string') {
+                errors.push({
+                    instancePath: `/${field}`,
+                    keyword: 'type',
+                    params: { type: 'string' },
+                    message: 'x',
+                });
+            } else if (field === 'role' && !roles.includes(item.role as string)) {
+                errors.push({
+                    instancePath: '/role',
+                    keyword: 'enum',
+                    params: { allowedValues: roles },
+                    message: 'x',
+                });
+            }
+        }
+        if ('age' in (item ?? {}) && typeof item.age !== 'number') {
+            errors.push({ instancePath: '/age', keyword: 'type', params: { type: 'integer' }, message: 'x' });
+        }
+        return errors.length > 0 ? errors : null;
+    };
+    const items: Item[] = [
+        { name: 'clean', age: 30, role: 'admin' },
+        { name: 'strip', age: 'old', role: 'user' },
+        { age: 5, role: 'user' },
+        { name: 'no role', age: 1 },
+        { name: 'bad role', age: 2, role: 'wizard' },
+    ];
+    const snapshot = structuredClone(items);
+    const { pushFn, calls } = makeMockPush(validate);
+    const res = await safePushData(pushFn, items);
+
+    assert.equal(res.pushedCount, 3);
+    assert.deepEqual(calls[calls.length - 1], [
+        { name: 'clean', age: 30, role: 'admin' },
+        { name: 'strip', role: 'user' },
+        { age: 5, role: 'user', name: '' },
+    ]);
+    // Both hopeless items are reported exactly as the caller passed them —
+    // 'bad role' had its role stripped and re-placeholdered along the way.
+    assert.deepEqual(
+        res.droppedItems.map((d) => d.item),
+        [
+            { name: 'no role', age: 1 },
+            { name: 'bad role', age: 2, role: 'wizard' },
+        ],
+    );
+    assert.deepEqual(res.droppedItems[0].errors, [
+        { instancePath: '/role', keyword: 'enum', params: { allowedValues: roles }, message: 'x' },
+    ]);
+    assert.equal(res.attemptCount, calls.length);
+    assert.deepEqual(items, snapshot);
+});
+
+test('log labels collapse array indices at every depth', async () => {
+    const pushFn: PushFn<Item> = async () => {
+        throw fakeSchemaError([
+            {
+                itemPosition: 0,
+                validationErrors: [
+                    { instancePath: '/rows/3/tags/2', keyword: 'type', params: { type: 'string' }, message: 'x' },
+                ],
+            },
+        ]);
+    };
+    const lines = await captureLogs(async () => {
+        await safePushData(pushFn, [{ rows: [] }], { maxAttempts: 2 });
+    });
+    assert.ok(lines[0].includes('/rows/[]/tags/[] (type)'), lines[0]);
+});
+
+test('log names an unknown property, not the object it was found on', async () => {
+    const pushFn: PushFn<Item> = async () => {
+        throw fakeSchemaError([
+            {
+                itemPosition: 0,
+                validationErrors: [
+                    {
+                        instancePath: '/meta',
+                        keyword: 'additionalProperties',
+                        params: { additionalProperty: 'junk' },
+                        message: 'x',
+                    },
+                ],
+            },
+        ]);
+    };
+    const lines = await captureLogs(async () => {
+        await safePushData(pushFn, [{ meta: {} }], { maxAttempts: 2 });
+    });
+    assert.ok(lines[0].includes('/meta/junk (additionalProperties)'), lines[0]);
+});
+
+test('out-of-range itemPosition is logged once per occurrence', async () => {
+    const pushFn: PushFn<Item> = async () => {
+        throw fakeSchemaError([
+            {
+                itemPosition: 5,
+                validationErrors: [
+                    { instancePath: '', keyword: 'required', params: { missingProperty: 'name' }, message: 'x' },
+                ],
+            },
+        ]);
+    };
+    const lines = await captureLogs(async () => {
+        await safePushData(pushFn, [{ age: 30 }], { maxAttempts: 1 });
+    });
+    assert.equal(lines[0], 'safePushData: ignoring out-of-range itemPosition 5 in validation error response.');
+    // Nothing in range failed, so the round has no fields to report.
+    assert.equal(
+        lines[1],
+        'safePushData: schema validation failed on attempt 1: 1 invalid item(s); attempt cap reached with 1 item(s) left.',
+    );
 });
 
 test('out-of-range itemPosition in the error payload is ignored, not a crash', async () => {
@@ -506,7 +1246,7 @@ test('out-of-range itemPosition in the error payload is ignored, not a crash', a
         ]);
     };
     const res = await safePushData(pushFn, [{ age: 30 }], { maxAttempts: 2 });
-    assert.equal(res.pushed, 0);
-    assert.equal(res.dropped.length, 1);
-    assert.deepEqual(res.dropped[0].item, { age: 30 });
+    assert.equal(res.pushedCount, 0);
+    assert.equal(res.droppedItems.length, 1);
+    assert.deepEqual(res.droppedItems[0].item, { age: 30 });
 });
