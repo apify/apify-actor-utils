@@ -1,4 +1,6 @@
-import { expect, test } from 'vitest';
+import { expect, test, vi } from 'vitest';
+
+import { Log } from '@apify/log';
 
 import {
     isSchemaValidationError,
@@ -69,18 +71,19 @@ function requiredStringName(item: Item): ValidationError[] | null {
     return null;
 }
 
-// Swap console.log for a recorder, run `fn`, restore. Returns every logged
-// line so the assertions can inspect what the wrapper reported.
+// Record what the wrapper logs while `fn` runs, then restore. The wrapper logs
+// through a `@apify/log` child logger, so we intercept at the class rather than
+// reaching for the module-private instance. The recorded lines exclude the
+// `pushDataWithSchemaRepair` prefix — the logger adds that at render time.
 async function captureLogs(fn: () => Promise<void>): Promise<string[]> {
     const lines: string[] = [];
-    const original = console.log;
-    console.log = (...args: unknown[]) => {
-        lines.push(args.join(' '));
-    };
+    const spy = vi.spyOn(Log.prototype, 'warning').mockImplementation((message: string) => {
+        lines.push(message);
+    });
     try {
         await fn();
     } finally {
-        console.log = original;
+        spy.mockRestore();
     }
     return lines;
 }
@@ -462,7 +465,7 @@ test('a dropped item reports only the fields that blocked it, not the ones repai
     // Every blocker is named at once, so one log line tells you the whole
     // story instead of the first offender in sort order.
     expect(lines[1]).toBe(
-        'pushDataWithSchemaRepair: schema validation failed on attempt 2: 1 invalid item(s); ' +
+        'schema validation failed on attempt 2: 1 invalid item(s); ' +
             'dropped 1 item(s) on unfixable fields: /imagesCount (type number), /isAd (type boolean); ' +
             'nothing left to retry.',
     );
@@ -492,7 +495,7 @@ test('a required field whose own value failed an unfillable type is named, not s
         expect(res.droppedItems[0].errors.map((e) => e.instancePath).sort()).toEqual(['/imagesCount', '/isAd']);
     });
     expect(lines[1]).toBe(
-        'pushDataWithSchemaRepair: schema validation failed on attempt 2: 1 invalid item(s); ' +
+        'schema validation failed on attempt 2: 1 invalid item(s); ' +
             'dropped 1 item(s) on unfixable fields: /imagesCount (type number), /isAd (type boolean); ' +
             'nothing left to retry.',
     );
@@ -1059,9 +1062,7 @@ test('when even the salvage push is rejected, nothing counts as pushed', async (
             { instancePath: '/ok', keyword: 'type', params: { type: 'string' }, message: 'late' },
         ]);
     });
-    expect(lines[lines.length - 1]).toBe(
-        'pushDataWithSchemaRepair: final push of 1 item(s) was rejected too; dropping them.',
-    );
+    expect(lines[lines.length - 1]).toBe('final push of 1 item(s) was rejected too; dropping them.');
 });
 
 test('maxAttempts: 1 leaves no room to repair but still gets the valid items in', async () => {
@@ -1133,6 +1134,37 @@ test('maxAttempts <= 0 is clamped to 1 (attempts always matches real pushFn call
     expect(res.attemptCount).toBe(1);
 });
 
+test('reports through @apify/log at WARNING level, under its own prefix', async () => {
+    // The other log tests intercept `Log.warning`, which would still pass if
+    // the prefix or the level were wrong. This one lets the real logger render
+    // and checks where the line actually lands: `console.warn` is WARNING's
+    // output channel, and the prefix has to survive into the rendered text.
+    const { pushFn } = makeMockPush(requiredStringName);
+    const warned: string[] = [];
+    const logged: string[] = [];
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation((line: string) => {
+        warned.push(line);
+    });
+    const logSpy = vi.spyOn(console, 'log').mockImplementation((line: string) => {
+        logged.push(line);
+    });
+    try {
+        const res = await pushDataWithSchemaRepair(pushFn, [{ age: 1 }]);
+        expect(res.pushedCount).toBe(1);
+    } finally {
+        warnSpy.mockRestore();
+        logSpy.mockRestore();
+    }
+    expect(warned.length).toBe(2);
+    // Colour codes sit between the prefix and the message, so match the prefix
+    // token itself rather than a contiguous `prefix: message`.
+    for (const line of warned) expect(line).toContain('pushDataWithSchemaRepair:');
+    expect(warned[0]).toContain('WARN');
+    expect(warned[0]).toContain('schema validation failed on attempt 1');
+    // Nothing goes to stdout any more — these are warnings, not chatter.
+    expect(logged).toEqual([]);
+});
+
 test('round log names the offending fields, deduped across items', async () => {
     const validate = (item: Item): ValidationError[] | null => {
         const errors: ValidationError[] = [];
@@ -1166,7 +1198,7 @@ test('round log names the offending fields, deduped across items', async () => {
     // collapse into one `/tags/[]` entry — the log reports fields, not
     // occurrences.
     expect(lines[0]).toBe(
-        'pushDataWithSchemaRepair: schema validation failed on attempt 1: 2 invalid item(s); ' +
+        'schema validation failed on attempt 1: 2 invalid item(s); ' +
             'repaired fields: /age (type integer), /tags/[] (type string); retrying with 2 item(s).',
     );
 });
@@ -1194,7 +1226,7 @@ test('round log separates dropped items and their unfixable fields', async () =>
         expect(res.droppedItems.length).toBe(1);
     });
     expect(lines[0]).toBe(
-        'pushDataWithSchemaRepair: schema validation failed on attempt 1: 1 invalid item(s); ' +
+        'schema validation failed on attempt 1: 1 invalid item(s); ' +
             'dropped 1 item(s) on unfixable fields: (item root) (type object); nothing left to retry.',
     );
 });
@@ -1210,7 +1242,7 @@ test('round log says so plainly when the API named no usable fields', async () =
     // No errors to name, so the log doesn't dangle an empty "unfixable
     // fields:" list.
     expect(lines[0]).toBe(
-        'pushDataWithSchemaRepair: schema validation failed on attempt 1: 1 invalid item(s); ' +
+        'schema validation failed on attempt 1: 1 invalid item(s); ' +
             'dropped 1 item(s) the API reported no usable errors for; nothing left to retry.',
     );
 });
@@ -1222,7 +1254,7 @@ test('give-up log names the fields that are still failing and what it salvages',
     });
     expect(lines[2].endsWith('attempt cap reached with 2 item(s) left.'), lines[2]).toBe(true);
     expect(lines[3]).toBe(
-        'pushDataWithSchemaRepair: gave up after 3 attempts; dropped 1 item(s) still failing on fields: /c (type string); ' +
+        'gave up after 3 attempts; dropped 1 item(s) still failing on fields: /c (type string); ' +
             'pushing the 1 valid item(s) left.',
     );
 });
@@ -1403,12 +1435,10 @@ test('out-of-range itemPosition is logged once per occurrence', async () => {
     const lines = await captureLogs(async () => {
         await pushDataWithSchemaRepair(pushFn, [{ age: 30 }], { maxAttempts: 1 });
     });
-    expect(lines[0]).toBe(
-        'pushDataWithSchemaRepair: ignoring out-of-range itemPosition 5 in validation error response.',
-    );
+    expect(lines[0]).toBe('ignoring out-of-range itemPosition 5 in validation error response.');
     // Nothing in range failed, so the round has no fields to report.
     expect(lines[1]).toBe(
-        'pushDataWithSchemaRepair: schema validation failed on attempt 1: 1 invalid item(s); attempt cap reached with 1 item(s) left.',
+        'schema validation failed on attempt 1: 1 invalid item(s); attempt cap reached with 1 item(s) left.',
     );
 });
 

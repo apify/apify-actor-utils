@@ -9,6 +9,14 @@
 // loop, but requires heavier code (locating + loading the schema, resolving
 // $refs, walking the schema tree). Something to consider in the future.
 
+import baseLog from '@apify/log';
+
+// A child of the Actor's own logger, so these lines inherit its level and
+// format and carry the `pushDataWithSchemaRepair` prefix without every message
+// spelling it out. Everything here logs at WARNING: each line means the push
+// was rejected and items were altered or lost, which is never routine.
+const log = baseLog.child({ prefix: 'pushDataWithSchemaRepair' });
+
 const SCHEMA_ERROR_TYPE = 'schema-validation-error';
 
 // Cap on how many distinct field issues we spell out in one log line. A
@@ -196,9 +204,7 @@ async function cleanAndRetry<T, R>(
             // position outside the batch we actually sent) instead of
             // crashing on `working[i]` being undefined.
             if (i < 0 || i >= working.length) {
-                console.log(
-                    `pushDataWithSchemaRepair: ignoring out-of-range itemPosition ${i} in validation error response.`,
-                );
+                log.warning(`ignoring out-of-range itemPosition ${i} in validation error response.`);
                 continue;
             }
             const { item: cleaned, blockingErrors } = cleanItemFields(
@@ -222,7 +228,7 @@ async function cleanAndRetry<T, R>(
         }
 
         const report = [
-            `pushDataWithSchemaRepair: schema validation failed on attempt ${attempts}: ${lastError.data.invalidItems.length} invalid item(s)`,
+            `schema validation failed on attempt ${attempts}: ${lastError.data.invalidItems.length} invalid item(s)`,
         ];
         if (repairedFields.size > 0) report.push(`repaired fields: ${formatFields(repairedFields)}`);
         if (droppedThisRound > 0) {
@@ -235,7 +241,7 @@ async function cleanAndRetry<T, R>(
         if (working.length === 0) report.push('nothing left to retry.');
         else if (attempts < maxAttempts) report.push(`retrying with ${working.length} item(s).`);
         else report.push(`attempt cap reached with ${working.length} item(s) left.`);
-        console.log(report.join('; '));
+        log.warning(report.join('; '));
 
         if (working.length === 0) return result(attempts);
 
@@ -255,14 +261,14 @@ async function cleanAndRetry<T, R>(
                 unresolved++;
                 dropAt(i, roundErrors[i]);
             }
-            const giveUp = [`pushDataWithSchemaRepair: gave up after ${maxAttempts} attempts`];
+            const giveUp = [`gave up after ${maxAttempts} attempts`];
             if (unresolved > 0) {
                 giveUp.push(`dropped ${unresolved} item(s) still failing on fields: ${formatFields(unresolvedFields)}`);
             }
             giveUp.push(
                 working.length > 0 ? `pushing the ${working.length} valid item(s) left.` : 'nothing to salvage.',
             );
-            console.log(giveUp.join('; '));
+            log.warning(giveUp.join('; '));
 
             if (working.length === 0) return result(maxAttempts);
 
@@ -277,9 +283,7 @@ async function cleanAndRetry<T, R>(
                 for (const invalid of err.data.invalidItems) {
                     errorsAt.set(invalid.itemPosition, invalid.validationErrors);
                 }
-                console.log(
-                    `pushDataWithSchemaRepair: final push of ${working.length} item(s) was rejected too; dropping them.`,
-                );
+                log.warning(`final push of ${working.length} item(s) was rejected too; dropping them.`);
                 for (let i = working.length - 1; i >= 0; i--) dropAt(i, errorsAt.get(i) ?? NO_ERRORS);
                 return result(attempts);
             }
