@@ -53,6 +53,11 @@ every AJV error per item:
 | Constraint on **user-supplied** data | Delete the field. If the schema later marks it required, a placeholder takes over. |
 | Nothing on the item was actionable   | Item is dropped — an unchanged item would fail identically on the next push.       |
 
+All errors reported for a path are considered **together**. AJV reports
+composite keywords next to the branch errors that explain them, so a nullable
+object arrives as `type: object`, `type: null` _and_ `anyOf` at once — a path is
+only hopeless when **none** of its errors offers a usable value.
+
 ### Placeholder defaults
 
 When a constraint fires on a path we placeholder'd ourselves, the wrapper
@@ -97,7 +102,7 @@ Every failed round logs which fields went wrong, so you can fix the schema
 (or the scraper) without digging through the returned `droppedItems`:
 
 ```
-pushDataWithSchemaRepair: schema validation failed on attempt 1: 12 invalid item(s); repaired fields: /age (type), /name (required), /tags/[] (type); dropped 2 item(s) on unfixable fields: /email (format); retrying with 10 item(s).
+pushDataWithSchemaRepair: schema validation failed on attempt 1: 12 invalid item(s); repaired fields: /age (type integer), /name (required), /tags/[] (type string); dropped 2 item(s) on unfixable fields: /email (format); retrying with 10 item(s).
 pushDataWithSchemaRepair: gave up after 5 attempts; dropped 3 item(s) still failing on fields: /sku (pattern); pushing the 9 valid item(s) left.
 ```
 
@@ -106,6 +111,30 @@ usually shows up on many items in a batch, and knowing which item had which
 problem rarely changes what you do about it. Array indices collapse
 (`/tags/0`, `/tags/7` → `/tags/[]`) for the same reason, and the list is
 capped at 20 entries with the rest reported as `(+N more)`.
+
+`unfixable fields` lists **only the errors that actually blocked the item** —
+never the ones the wrapper repaired on the way there. `type` errors carry the
+expected type (`/imagesCount (type number)`) because for a dropped field that's
+the whole explanation: the wrapper won't invent a number.
+
+### Reading a dropped item's report
+
+A batch failing on dozens of required fields usually resolves in two rounds,
+and the second round's log is the one that matters. Given a schema requiring
+`title: string`, `categories: array`, `imagesCount: number` and
+`isAdvertisement: boolean`, pushing `{}` logs:
+
+```
+… attempt 1: 1 invalid item(s); repaired fields: /categories (required), /imagesCount (required), /isAdvertisement (required), /title (required); retrying with 1 item(s).
+… attempt 2: 1 invalid item(s); dropped 1 item(s) on unfixable fields: /imagesCount (type number), /isAdvertisement (type boolean); nothing left to retry.
+```
+
+Round 1 placeholders all four to `null`. Round 2 upgrades `/title` to `''` and
+`/categories` to `[]` — but `/imagesCount` and `/isAdvertisement` would need a
+fabricated `0` / `false`, so the item is dropped and **only those two are
+named**. If you want items like this to survive, the fix is in the schema: make
+the required number and boolean fields nullable (`["number", "null"]`), or drop
+them from `required`.
 
 ## Options
 
@@ -122,7 +151,10 @@ objects.
 interface PushDataWithSchemaRepairResult<T, R = unknown> {
     /** How many of the caller's items made it into the dataset. */
     pushedCount: number;
-    /** The items we couldn't repair, each with the errors that doomed it. */
+    /**
+     * The items we couldn't repair. `errors` holds only the errors that
+     * actually doomed the item, not every error the API reported for it.
+     */
     droppedItems: { item: T; errors: ValidationError[] }[];
     /** How many times `pushFn` was actually called. */
     attemptCount: number;

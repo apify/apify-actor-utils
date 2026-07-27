@@ -56,6 +56,13 @@ export function isSchemaValidationError(err: unknown): err is SchemaValidationEr
 
 export interface DroppedItem<T> {
     item: T;
+    /**
+     * Why this item was dropped. When the item failed on a specific field we
+     * couldn't repair, this holds *only* those blocking errors — not every
+     * error the API reported for the item, most of which we did fix. When the
+     * item ran out of attempts (or the API reported no errors at all) it holds
+     * whatever the last round said about it.
+     */
     errors: ValidationError[];
 }
 
@@ -187,11 +194,18 @@ async function cleanAndRetry<T, R>(
                 );
                 continue;
             }
-            const cleaned = cleanItemFields(working[i], invalid.validationErrors, placeholderPaths[i]);
+            const { item: cleaned, blockingErrors } = cleanItemFields(
+                working[i],
+                invalid.validationErrors,
+                placeholderPaths[i],
+            );
             if (cleaned === null) {
-                collectFieldIssues(invalid.validationErrors, droppedFields);
+                // Report only what actually doomed the item. Logging every
+                // error it had would name the fields we *did* repair as
+                // "unfixable" and send you chasing the wrong ones.
+                collectFieldIssues(blockingErrors, droppedFields);
                 droppedThisRound++;
-                dropAt(i, invalid.validationErrors);
+                dropAt(i, blockingErrors);
             } else {
                 working[i] = cleaned;
                 roundErrors[i] = invalid.validationErrors;
@@ -204,7 +218,11 @@ async function cleanAndRetry<T, R>(
         ];
         if (repairedFields.size > 0) report.push(`repaired fields: ${formatFields(repairedFields)}`);
         if (droppedThisRound > 0) {
-            report.push(`dropped ${droppedThisRound} item(s) on unfixable fields: ${formatFields(droppedFields)}`);
+            report.push(
+                droppedFields.size > 0
+                    ? `dropped ${droppedThisRound} item(s) on unfixable fields: ${formatFields(droppedFields)}`
+                    : `dropped ${droppedThisRound} item(s) the API reported no usable errors for`,
+            );
         }
         if (working.length === 0) report.push('nothing left to retry.');
         else if (attempts < maxAttempts) report.push(`retrying with ${working.length} item(s).`);
@@ -285,7 +303,19 @@ function fieldIssueLabel(err: ValidationError): string {
     const child = offendingKey(err.params);
     const parent = err.instancePath || '';
     const path = child === undefined ? parent : `${parent}/${escapeJsonPointerSegment(child)}`;
-    return `${path === '' ? '(item root)' : collapseArrayIndices(path)} (${err.keyword})`;
+    return `${path === '' ? '(item root)' : collapseArrayIndices(path)} (${describeKeyword(err)})`;
+}
+
+// Which keyword failed, plus the expected type when there is one. For a field
+// we had to drop, that type *is* the explanation: `/imagesCount (type number)`
+// says "we won't invent a number for you", where a bare `(type)` leaves you
+// wondering why `''` wasn't good enough.
+function describeKeyword(err: ValidationError): string {
+    if (err.keyword !== 'type') return err.keyword;
+    const expected = err.params?.type;
+    if (typeof expected === 'string') return `type ${expected}`;
+    if (Array.isArray(expected) && expected.every((t) => typeof t === 'string')) return `type ${expected.join('|')}`;
+    return err.keyword;
 }
 
 // The key an error blames when instancePath points at its parent.
@@ -310,17 +340,41 @@ function formatFields(fields: ReadonlySet<string>): string {
     return `${shown.join(', ')} (+${sorted.length - MAX_LOGGED_FIELDS} more)`;
 }
 
-// Try to repair a single item given its AJV errors. Returns null when the
-// item can't be salvaged — including when none of its errors turned out to
+interface CleanOutcome<T> {
+    /** The repaired item, or null when it can't be salvaged. */
+    item: T | null;
+    /**
+     * When `item` is null, the errors that actually blocked the repair — the
+     * only ones worth reporting. Empty when `item` is non-null.
+     */
+    blockingErrors: ValidationError[];
+}
+
+// Try to repair a single item given its AJV errors. Returns `item: null` when
+// the item can't be salvaged — including when none of its errors turned out to
 // be actionable, since re-pushing an unchanged item would just reproduce the
 // same errors and burn the remaining attempts.
 //
+// Every blocker is collected rather than bailing on the first one, so a dropped
+// item can report *all* the fields standing in its way instead of whichever
+// happened to sort first.
+//
 // Mutates `placeholderPaths` to record any fields we filled in ourselves,
 // so the caller can keep iterating on them across rounds.
-function cleanItemFields<T>(item: T, validationErrors: ValidationError[], placeholderPaths: Set<string>): T | null {
+function cleanItemFields<T>(
+    item: T,
+    validationErrors: ValidationError[],
+    placeholderPaths: Set<string>,
+): CleanOutcome<T> {
     // structuredClone so we never mutate the caller's data.
     const cloned = structuredClone(item) as T;
     let changed = false;
+    const blockingErrors: ValidationError[] = [];
+
+    // Decide what each placeholder path gets *before* touching the item: see
+    // planPlaceholderFixes for why they can't be judged one error at a time.
+    const plan = planPlaceholderFixes(validationErrors, placeholderPaths);
+    const filled = new Set<string>();
 
     for (const err of sortForRepair(validationErrors)) {
         const instancePath = err.instancePath || '';
@@ -349,18 +403,27 @@ function cleanItemFields<T>(item: T, validationErrors: ValidationError[], placeh
 
         // Any other error at the root means the item itself is the wrong
         // shape (wrong type, failed `anyOf`, …) — there's no field to strip.
-        if (path.length === 0) return null;
+        if (path.length === 0) {
+            blockingErrors.push(err);
+            continue;
+        }
 
         // Errors on a path we placeholder'd: try to satisfy the constraint
         // rather than delete the field (deleting would re-trigger required).
         if (placeholderPaths.has(instancePath)) {
-            const fix = placeholderFor(err);
-            if (!fix.ok) {
-                // Constraint we don't know how to satisfy on a placeholder
-                // field (e.g. pattern, custom format). Give up on this item.
-                return null;
+            const fix = plan.get(instancePath);
+            if (!fix) {
+                // No value we're willing to invent satisfies this path
+                // (e.g. `type: number`, `pattern`, a custom format).
+                blockingErrors.push(err);
+                continue;
             }
-            if (setAtPath(cloned, path, fix.value)) changed = true;
+            // One write per path — the plan already picked the single value
+            // that covers every error reported on it.
+            if (!filled.has(instancePath)) {
+                filled.add(instancePath);
+                if (setAtPath(cloned, path, fix.value)) changed = true;
+            }
             continue;
         }
 
@@ -370,10 +433,46 @@ function cleanItemFields<T>(item: T, validationErrors: ValidationError[], placeh
         if (deleteAtPath(cloned, path)) changed = true;
     }
 
+    if (blockingErrors.length > 0) return { item: null, blockingErrors };
+
     // Nothing we could act on (paths that no longer exist, keywords with no
     // handler): the next push would fail identically, so drop the item now
-    // instead of spending every remaining attempt to learn that.
-    return changed ? cloned : null;
+    // instead of spending every remaining attempt to learn that. There's no
+    // single culprit to name, so the whole error list is the reason.
+    if (!changed) return { item: null, blockingErrors: validationErrors };
+
+    return { item: cloned, blockingErrors: NO_ERRORS };
+}
+
+// Pick one placeholder value per placeholder path, considering every error
+// reported on that path together.
+//
+// AJV reports composite keywords (`anyOf`, `oneOf`) alongside the branch
+// errors that explain them, so one path can arrive with several errors of
+// which only some suggest a usable value: a nullable-object field yields
+// `type: object`, `type: null` *and* `anyOf` at once. Judging them one at a
+// time let the composite error condemn a field its sibling had just fixed,
+// and let a later branch overwrite an earlier branch's value. Grouping first
+// means a path is only a blocker when *none* of its errors offers a fix.
+//
+// Between competing fixes `null` wins, for the same reason it wins inside a
+// union type: it commits to no concrete value at all. Otherwise the first
+// usable one is kept.
+function planPlaceholderFixes(
+    validationErrors: readonly ValidationError[],
+    placeholderPaths: ReadonlySet<string>,
+): Map<string, { value: unknown }> {
+    const plan = new Map<string, { value: unknown }>();
+    for (const err of validationErrors) {
+        const instancePath = err.instancePath || '';
+        if (instancePath === '' || !placeholderPaths.has(instancePath)) continue;
+        const existing = plan.get(instancePath);
+        if (existing && existing.value === null) continue;
+        const fix = placeholderFor(err);
+        if (!fix.ok) continue;
+        if (existing === undefined || fix.value === null) plan.set(instancePath, { value: fix.value });
+    }
+    return plan;
 }
 
 // Order one item's errors so the repairs don't interfere with each other.
