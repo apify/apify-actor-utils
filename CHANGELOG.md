@@ -6,9 +6,8 @@ All notable changes to this project will be documented in this file.
 
 ## Unreleased
 
-### gteam-internal
+### Testing
 
-- Add a new `./gteam-internal` subpath export with its own `safePushData`, wrapping `Actor.pushData`/`Dataset.pushData` directly instead of taking a `pushFn`
 - Consolidate all tests onto Vitest (drops the separate `node:test` suite)
 
 <!-- git-cliff-unreleased-end -->
