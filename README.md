@@ -1,20 +1,21 @@
-# safePushData
+# pushDataWithSchemaRepair
 
 TypeScript library wrapper that survives Apify dataset schema-validation
 failures. When an upstream data source produces an item that doesn't match
 the dataset's JSON schema, the platform rejects the **entire batch** with
-a 400 error — losing every other valid item in that push. `safePushData`
-parses the validation error, strips the offending fields, and retries.
+a 400 error — losing every other valid item in that push.
+`pushDataWithSchemaRepair` parses the validation error, strips the
+offending fields, and retries.
 
 ## Usage
 
 ```ts
 import { Actor } from 'apify';
-import { safePushData } from 'apify-actor-utils';
+import { pushDataWithSchemaRepair } from 'apify-actor-utils';
 
 await Actor.init();
 
-const result = await safePushData((batch) => Actor.pushData(batch), items);
+const result = await pushDataWithSchemaRepair((batch) => Actor.pushData(batch), items);
 
 console.log(result);
 // { pushedCount: 2, droppedItems: [...], attemptCount: 2, pushResult: undefined }
@@ -28,7 +29,7 @@ Whatever `pushFn` resolves to comes back as `pushResult`, so a push
 function with a meaningful return value stays usable:
 
 ```ts
-const { pushResult } = await safePushData((batch) => client.dataset(id).pushItems(batch), items);
+const { pushResult } = await pushDataWithSchemaRepair((batch) => client.dataset(id).pushItems(batch), items);
 ```
 
 ## Performance notes
@@ -96,8 +97,8 @@ Every failed round logs which fields went wrong, so you can fix the schema
 (or the scraper) without digging through the returned `droppedItems`:
 
 ```
-safePushData: schema validation failed on attempt 1: 12 invalid item(s); repaired fields: /age (type), /name (required), /tags/[] (type); dropped 2 item(s) on unfixable fields: /email (format); retrying with 10 item(s).
-safePushData: gave up after 5 attempts; dropped 3 item(s) still failing on fields: /sku (pattern); pushing the 9 valid item(s) left.
+pushDataWithSchemaRepair: schema validation failed on attempt 1: 12 invalid item(s); repaired fields: /age (type), /name (required), /tags/[] (type); dropped 2 item(s) on unfixable fields: /email (format); retrying with 10 item(s).
+pushDataWithSchemaRepair: gave up after 5 attempts; dropped 3 item(s) still failing on fields: /sku (pattern); pushing the 9 valid item(s) left.
 ```
 
 The field list is a **set**, not a per-item breakdown — one bad field
@@ -118,7 +119,7 @@ Names say what they hold: `*Count` is a number, `*Items` is an array of
 objects.
 
 ```ts
-interface SafePushDataResult<T, R = unknown> {
+interface PushDataWithSchemaRepairResult<T, R = unknown> {
     /** How many of the caller's items made it into the dataset. */
     pushedCount: number;
     /** The items we couldn't repair, each with the errors that doomed it. */
@@ -149,20 +150,12 @@ Highlights:
 
 ```
 .
-├── index.ts                            # package entry point, re-exports src/
-├── src/
-│   ├── safePushData.ts                 # the library
-│   └── gteam-internal/                 # separate export: ./gteam-internal
-│       ├── README.md
-│       ├── index.ts
-│       └── push-data.ts
-├── test/
-│   ├── safePushData.test.ts            # Vitest suite
-│   └── gteam-internal/
-│       └── push-data.test.ts           # Vitest suite
+├── index.ts                               # package entry point, re-exports src/
+├── src/pushDataWithSchemaRepair.ts        # the library
+├── test/pushDataWithSchemaRepair.test.ts  # Vitest suite
 ├── scripts/
-│   ├── check-pushdata.mjs              # CI guard against direct .pushData() calls
-│   └── probe-errors.mjs                # reference: re-derive the API error shape
+│   ├── check-pushdata.mjs                 # CI guard against direct .pushData() calls
+│   └── probe-errors.mjs                   # reference: re-derive the API error shape
 ├── tsconfig.json
 ├── vitest.config.ts
 └── package.json

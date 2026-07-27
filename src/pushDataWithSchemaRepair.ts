@@ -1,6 +1,6 @@
-// safePushData: parse the Apify dataset schema-validation error, repair the
-// offending items (strip bad fields, placeholder missing required ones), and
-// retry the push.
+// pushDataWithSchemaRepair: parse the Apify dataset schema-validation error,
+// repair the offending items (strip bad fields, placeholder missing required
+// ones), and retry the push.
 //
 // NOTE: instead of recursively healing the data one error-round at a time, we
 // could parse the Actor's `dataset_schema.json` up front and fix every item in
@@ -61,7 +61,7 @@ export interface DroppedItem<T> {
 
 // Field names say what they hold: `*Count` is a number, `*Items` is an array
 // of objects. `R` is whatever the caller's push function resolves to.
-export interface SafePushDataResult<T, R = unknown> {
+export interface PushDataWithSchemaRepairResult<T, R = unknown> {
     /** How many of the caller's items made it into the dataset. */
     pushedCount: number;
     /** The items we couldn't repair, each with the errors that doomed it. */
@@ -75,7 +75,7 @@ export interface SafePushDataResult<T, R = unknown> {
     pushResult?: R;
 }
 
-export interface SafePushDataOptions {
+export interface PushDataWithSchemaRepairOptions {
     maxAttempts?: number;
 }
 
@@ -92,11 +92,11 @@ export type PushFn<T, R = unknown> = (items: T[]) => Promise<R>;
  *
  * Whatever `pushFn` resolves to is handed back untouched as `pushResult`.
  */
-export async function safePushData<T, R = unknown>(
+export async function pushDataWithSchemaRepair<T, R = unknown>(
     pushFn: PushFn<T, R>,
     input: T | T[],
-    options: SafePushDataOptions = {},
-): Promise<SafePushDataResult<T, R>> {
+    options: PushDataWithSchemaRepairOptions = {},
+): Promise<PushDataWithSchemaRepairResult<T, R>> {
     const items = Array.isArray(input) ? input : [input];
 
     // Happy path: assume validation will succeed (the overwhelmingly common
@@ -118,7 +118,7 @@ async function cleanAndRetry<T, R>(
     originalItems: readonly T[],
     initialError: SchemaValidationError,
     maxAttempts: number,
-): Promise<SafePushDataResult<T, R>> {
+): Promise<PushDataWithSchemaRepairResult<T, R>> {
     // working[i] is what we'll send on the next push. We mutate this array
     // in place (splicing drops, replacing cleaned entries); the caller's
     // `originalItems` is never touched.
@@ -155,7 +155,7 @@ async function cleanAndRetry<T, R>(
     // everything that isn't in it, so "original minus dropped" is exactly what
     // landed. (A rejected push stores nothing at all — not even the items the
     // API found no fault with.)
-    const result = (attemptCount: number, pushResult?: R): SafePushDataResult<T, R> => ({
+    const result = (attemptCount: number, pushResult?: R): PushDataWithSchemaRepairResult<T, R> => ({
         pushedCount: originalItems.length - dropped.length,
         droppedItems: dropped,
         attemptCount,
@@ -182,7 +182,9 @@ async function cleanAndRetry<T, R>(
             // position outside the batch we actually sent) instead of
             // crashing on `working[i]` being undefined.
             if (i < 0 || i >= working.length) {
-                console.log(`safePushData: ignoring out-of-range itemPosition ${i} in validation error response.`);
+                console.log(
+                    `pushDataWithSchemaRepair: ignoring out-of-range itemPosition ${i} in validation error response.`,
+                );
                 continue;
             }
             const cleaned = cleanItemFields(working[i], invalid.validationErrors, placeholderPaths[i]);
@@ -198,7 +200,7 @@ async function cleanAndRetry<T, R>(
         }
 
         const report = [
-            `safePushData: schema validation failed on attempt ${attempts}: ${lastError.data.invalidItems.length} invalid item(s)`,
+            `pushDataWithSchemaRepair: schema validation failed on attempt ${attempts}: ${lastError.data.invalidItems.length} invalid item(s)`,
         ];
         if (repairedFields.size > 0) report.push(`repaired fields: ${formatFields(repairedFields)}`);
         if (droppedThisRound > 0) {
@@ -227,7 +229,7 @@ async function cleanAndRetry<T, R>(
                 unresolved++;
                 dropAt(i, roundErrors[i]);
             }
-            const giveUp = [`safePushData: gave up after ${maxAttempts} attempts`];
+            const giveUp = [`pushDataWithSchemaRepair: gave up after ${maxAttempts} attempts`];
             if (unresolved > 0) {
                 giveUp.push(`dropped ${unresolved} item(s) still failing on fields: ${formatFields(unresolvedFields)}`);
             }
@@ -249,7 +251,9 @@ async function cleanAndRetry<T, R>(
                 for (const invalid of err.data.invalidItems) {
                     errorsAt.set(invalid.itemPosition, invalid.validationErrors);
                 }
-                console.log(`safePushData: final push of ${working.length} item(s) was rejected too; dropping them.`);
+                console.log(
+                    `pushDataWithSchemaRepair: final push of ${working.length} item(s) was rejected too; dropping them.`,
+                );
                 for (let i = working.length - 1; i >= 0; i--) dropAt(i, errorsAt.get(i) ?? NO_ERRORS);
                 return result(attempts);
             }
