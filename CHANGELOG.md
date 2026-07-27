@@ -3,12 +3,12 @@
 All notable changes to this project will be documented in this file.
 
 <!-- git-cliff-unreleased-start -->
+## 0.1.4 - **not yet released**
 
-## Unreleased
+### 🚀 Features
 
-### Testing
+- **gteam-internal:** Add gteam-internal subpath export, migrate tests to Vitest ([#5](https://github.com/apify/apify-actor-utils/pull/5)) ([4e133c2](https://github.com/apify/apify-actor-utils/commit/4e133c261a51a3fa02da72d9a47b21a8a6119928)) by [@yaroslav-tykhovetskyi-apify](https://github.com/yaroslav-tykhovetskyi-apify)
 
-- Consolidate all tests onto Vitest (drops the separate `node:test` suite)
 
 <!-- git-cliff-unreleased-end -->
 
