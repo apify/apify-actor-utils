@@ -24,6 +24,10 @@
         "./type-utils": {
             "types": "./dist/src/type-utils/index.d.ts",
             "default": "./dist/src/type-utils/index.js"
+        },
+        "./gteam-internal": {
+            "types": "./dist/src/gteam-internal/index.d.ts",
+            "default": "./dist/src/gteam-internal/index.js"
         }
     },
     "files": [
@@ -40,7 +44,7 @@
         "lint:fix": "eslint --fix",
         "format": "prettier --write .",
         "format:check": "prettier --check .",
-        "test": "tsc && node --test dist/test/*.test.js",
+        "test": "vitest run --coverage",
         "check:pushdata": "node scripts/check-pushdata.mjs",
         "check-unused": "knip",
         "ci": "npm run typecheck && npm run lint && npm run format:check && npm run check:pushdata && npm test",
@@ -55,8 +59,11 @@
     "devDependencies": {
         "@apify/eslint-config": "^1.2.0",
         "@apify/tsconfig": "^0.1.2",
+        "@crawlee/core": "3.16.0",
         "@types/node": "^25.9.1",
-        "apify-client": "^2.10.0",
+        "@vitest/coverage-v8": "^4.0.18",
+        "apify": "3.7.2",
+        "apify-client": "^2.17.0",
         "eslint": "^9.39.4",
         "eslint-config-prettier": "^10.1.8",
         "globals": "^17.7.0",
@@ -65,10 +72,25 @@
         "lint-staged": "^15.5.2",
         "prettier": "^3.9.4",
         "typescript": "^6.0.3",
-        "typescript-eslint": "^8.62.1"
+        "typescript-eslint": "^8.62.1",
+        "vitest": "^4.0.18"
     },
     "license": "ISC",
     "peerDependencies": {
-        "@apify/log": "^2.5.44"
+        "@apify/log": "^2.5.44",
+        "@crawlee/core": "~3.16",
+        "apify": "~3.7",
+        "apify-client": "~2.17"
+    },
+    "peerDependenciesMeta": {
+        "@crawlee/core": {
+            "optional": true
+        },
+        "apify": {
+            "optional": true
+        },
+        "apify-client": {
+            "optional": true
+        }
     }
 }

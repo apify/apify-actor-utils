@@ -1,6 +1,4 @@
-// Run: npm test (builds then runs the compiled suite under node --test)
-import assert from 'node:assert/strict';
-import test from 'node:test';
+import { expect, test } from 'vitest';
 
 import {
     isSchemaValidationError,
@@ -88,12 +86,11 @@ async function captureLogs(fn: () => Promise<void>): Promise<string[]> {
 }
 
 test('isSchemaValidationError recognises the API shape', () => {
-    assert.equal(
+    expect(
         isSchemaValidationError({ type: 'schema-validation-error', statusCode: 400, data: { invalidItems: [] } }),
-        true,
-    );
+    ).toBe(true);
     // A real ApifyApiError is an Error with the fields hung off it.
-    assert.equal(isSchemaValidationError(fakeSchemaError([])), true);
+    expect(isSchemaValidationError(fakeSchemaError([]))).toBe(true);
 });
 
 test('isSchemaValidationError rejects everything else', () => {
@@ -114,7 +111,7 @@ test('isSchemaValidationError rejects everything else', () => {
         { type: 'schema-validation-error', statusCode: 400, data: { invalidItems: 'nope' } },
     ];
     for (const value of cases) {
-        assert.equal(isSchemaValidationError(value), false, `expected false for ${JSON.stringify(value)}`);
+        expect(isSchemaValidationError(value), `expected false for ${JSON.stringify(value)}`).toBe(false);
     }
 });
 
@@ -128,21 +125,21 @@ test('a rejection that only looks like a schema error is rethrown untouched', as
         err.data = { invalidItems: [{ itemPosition: 0, validationErrors: [] }] };
         throw err;
     };
-    await assert.rejects(async () => pushDataWithSchemaRepair(pushFn, [{ a: 1 }]), /gateway/);
+    await expect(pushDataWithSchemaRepair(pushFn, [{ a: 1 }])).rejects.toThrow(/gateway/);
 });
 
 test('happy path: one push, no allocations beyond the result object', async () => {
     const { pushFn, calls } = makeMockPush(() => null);
     const items: Item[] = [{ a: 1 }, { a: 2 }];
     const res = await pushDataWithSchemaRepair(pushFn, items);
-    assert.equal(res.pushedCount, 2);
-    assert.equal(res.droppedItems.length, 0);
-    assert.equal(res.attemptCount, 1);
+    expect(res.pushedCount).toBe(2);
+    expect(res.droppedItems.length).toBe(0);
+    expect(res.attemptCount).toBe(1);
     // The wrapper handed the caller's exact array to pushFn (same reference).
     // The mock snapshots its argument so we can only check shape, but the
     // count proves the happy path didn't copy/wrap.
-    assert.equal(calls.length, 1);
-    assert.equal(calls[0].length, 2);
+    expect(calls.length).toBe(1);
+    expect(calls[0].length).toBe(2);
 });
 
 test('deletes invalid field, then retries successfully', async () => {
@@ -165,9 +162,9 @@ test('deletes invalid field, then retries successfully', async () => {
         { name: 'Alice', age: 30 },
         { name: 'Bob', age: 'old' },
     ]);
-    assert.equal(res.pushedCount, 2);
-    assert.equal(res.droppedItems.length, 0);
-    assert.deepEqual(calls[1][1], { name: 'Bob' });
+    expect(res.pushedCount).toBe(2);
+    expect(res.droppedItems.length).toBe(0);
+    expect(calls[1][1]).toEqual({ name: 'Bob' });
 });
 
 test('placeholders a missing required field, then satisfies the type', async () => {
@@ -195,10 +192,10 @@ test('placeholders a missing required field, then satisfies the type', async () 
     };
     const { pushFn, calls } = makeMockPush(validate);
     const res = await pushDataWithSchemaRepair(pushFn, { age: 30 });
-    assert.equal(res.pushedCount, 1);
-    assert.equal(res.droppedItems.length, 0);
+    expect(res.pushedCount).toBe(1);
+    expect(res.droppedItems.length).toBe(0);
     // Final pushed item: name was placeholder'd to null, then upgraded to ''.
-    assert.deepEqual(calls[calls.length - 1][0], { age: 30, name: '' });
+    expect(calls[calls.length - 1][0]).toEqual({ age: 30, name: '' });
 });
 
 test('drops item when a placeholder field carries a minLength it cannot satisfy', async () => {
@@ -239,9 +236,9 @@ test('drops item when a placeholder field carries a minLength it cannot satisfy'
     };
     const { pushFn } = makeMockPush(validate);
     const res = await pushDataWithSchemaRepair(pushFn, { age: 30 }, { maxAttempts: 10 });
-    assert.equal(res.pushedCount, 0);
-    assert.equal(res.droppedItems.length, 1);
-    assert.deepEqual(res.droppedItems[0].item, { age: 30 });
+    expect(res.pushedCount).toBe(0);
+    expect(res.droppedItems.length).toBe(1);
+    expect(res.droppedItems[0].item).toEqual({ age: 30 });
 });
 
 test('drops item on enum constraint instead of fabricating the first allowed value', async () => {
@@ -284,8 +281,8 @@ test('drops item on enum constraint instead of fabricating the first allowed val
     };
     const { pushFn } = makeMockPush(validate);
     const res = await pushDataWithSchemaRepair(pushFn, { name: 'x' }, { maxAttempts: 10 });
-    assert.equal(res.pushedCount, 0);
-    assert.equal(res.droppedItems.length, 1);
+    expect(res.pushedCount).toBe(0);
+    expect(res.droppedItems.length).toBe(1);
 });
 
 test('drops item on format=email instead of fabricating a fake address', async () => {
@@ -326,8 +323,8 @@ test('drops item on format=email instead of fabricating a fake address', async (
     };
     const { pushFn } = makeMockPush(validate);
     const res = await pushDataWithSchemaRepair(pushFn, { name: 'x' }, { maxAttempts: 10 });
-    assert.equal(res.pushedCount, 0);
-    assert.equal(res.droppedItems.length, 1);
+    expect(res.pushedCount).toBe(0);
+    expect(res.droppedItems.length).toBe(1);
 });
 
 test('required field with a union type that allows null is placeholder-filled with null', async () => {
@@ -360,9 +357,9 @@ test('required field with a union type that allows null is placeholder-filled wi
     };
     const { pushFn, calls } = makeMockPush(validate);
     const res = await pushDataWithSchemaRepair(pushFn, { name: 'x' });
-    assert.equal(res.pushedCount, 1);
-    assert.equal(res.droppedItems.length, 0);
-    assert.deepEqual(calls[calls.length - 1][0], { name: 'x', note: null });
+    expect(res.pushedCount).toBe(1);
+    expect(res.droppedItems.length).toBe(0);
+    expect(calls[calls.length - 1][0]).toEqual({ name: 'x', note: null });
 });
 
 test('drops item when a placeholder constraint has no known fix (pattern)', async () => {
@@ -399,8 +396,8 @@ test('drops item when a placeholder constraint has no known fix (pattern)', asyn
     };
     const { pushFn } = makeMockPush(validate);
     const res = await pushDataWithSchemaRepair(pushFn, [{ name: 'x' }], { maxAttempts: 10 });
-    assert.equal(res.pushedCount, 0);
-    assert.equal(res.droppedItems.length, 1);
+    expect(res.pushedCount).toBe(0);
+    expect(res.droppedItems.length).toBe(1);
 });
 
 test('user-supplied bad data still gets the field stripped, not placeholder-treated', async () => {
@@ -419,10 +416,10 @@ test('user-supplied bad data still gets the field stripped, not placeholder-trea
     };
     const { pushFn, calls } = makeMockPush(validate);
     const res = await pushDataWithSchemaRepair(pushFn, [{ name: 'Bob', age: 'old' }]);
-    assert.equal(res.pushedCount, 1);
+    expect(res.pushedCount).toBe(1);
     // age was user-supplied (not a placeholder we set), so it got deleted
     // rather than coerced to 0.
-    assert.deepEqual(calls[calls.length - 1][0], { name: 'Bob' });
+    expect(calls[calls.length - 1][0]).toEqual({ name: 'Bob' });
 });
 
 test('removes bad element from array via /tags/0 path', async () => {
@@ -446,10 +443,10 @@ test('removes bad element from array via /tags/0 path', async () => {
     };
     const { pushFn, calls } = makeMockPush(validate);
     const res = await pushDataWithSchemaRepair(pushFn, [{ name: 'Eve', tags: [42, 'ok', 99] }]);
-    assert.equal(res.pushedCount, 1);
+    expect(res.pushedCount).toBe(1);
     const finalPushed = calls[calls.length - 1][0];
-    assert.equal(finalPushed.name, 'Eve');
-    assert.ok((finalPushed.tags as unknown[]).every((t) => typeof t === 'string'));
+    expect(finalPushed.name).toBe('Eve');
+    expect((finalPushed.tags as unknown[]).every((t) => typeof t === 'string')).toBe(true);
 });
 
 test('single object input: dropped on missing-required, no crash', async () => {
@@ -463,15 +460,15 @@ test('single object input: dropped on missing-required, no crash', async () => {
         },
     ]);
     const res = await pushDataWithSchemaRepair(pushFn, { age: 99 });
-    assert.equal(res.pushedCount, 0);
-    assert.equal(res.droppedItems.length, 1);
-    assert.deepEqual(res.droppedItems[0].item, { age: 99 });
+    expect(res.pushedCount).toBe(0);
+    expect(res.droppedItems.length).toBe(1);
+    expect(res.droppedItems[0].item).toEqual({ age: 99 });
 });
 
 test('pushResult carries whatever pushFn resolved to', async () => {
     const pushFn: PushFn<Item, { stored: number }> = async (batch) => ({ stored: batch.length });
     const res = await pushDataWithSchemaRepair(pushFn, [{ a: 1 }, { a: 2 }]);
-    assert.deepEqual(res.pushResult, { stored: 2 });
+    expect(res.pushResult).toEqual({ stored: 2 });
 });
 
 test('pushResult comes from the push that actually succeeded, not an earlier one', async () => {
@@ -491,8 +488,8 @@ test('pushResult comes from the push that actually succeeded, not an earlier one
         return `stored ${batch.length} on call ${call}`;
     };
     const res = await pushDataWithSchemaRepair(pushFn, [{ name: 'A' }, { name: 'B', age: 'old' }]);
-    assert.equal(res.pushResult, 'stored 2 on call 2');
-    assert.equal(res.attemptCount, 2);
+    expect(res.pushResult).toBe('stored 2 on call 2');
+    expect(res.attemptCount).toBe(2);
 });
 
 test('pushResult is undefined when nothing was ever pushed', async () => {
@@ -500,8 +497,8 @@ test('pushResult is undefined when nothing was ever pushed', async () => {
         { instancePath: '', keyword: 'type', params: { type: 'object' }, message: 'x' },
     ]);
     const res = await pushDataWithSchemaRepair(pushFn, [{ a: 1 }]);
-    assert.equal(res.pushedCount, 0);
-    assert.equal(res.pushResult, undefined);
+    expect(res.pushedCount).toBe(0);
+    expect(res.pushResult).toBeUndefined();
 });
 
 test('a nested required field is placeholder-filled, not nuked along with its parent', async () => {
@@ -535,8 +532,8 @@ test('a nested required field is placeholder-filled, not nuked along with its pa
     };
     const { pushFn, calls } = makeMockPush(validate);
     const res = await pushDataWithSchemaRepair(pushFn, [{ address: { street: 'Main 1' } }]);
-    assert.equal(res.pushedCount, 1);
-    assert.deepEqual(calls[calls.length - 1][0], { address: { street: 'Main 1', city: '' } });
+    expect(res.pushedCount).toBe(1);
+    expect(calls[calls.length - 1][0]).toEqual({ address: { street: 'Main 1', city: '' } });
 });
 
 test('sibling array elements are removed in one round, without taking a valid one with them', async () => {
@@ -553,10 +550,10 @@ test('sibling array elements are removed in one round, without taking a valid on
     };
     const { pushFn, calls } = makeMockPush(validate);
     const res = await pushDataWithSchemaRepair(pushFn, [{ tags: [1, 2, 'ok'] }]);
-    assert.equal(res.pushedCount, 1);
-    assert.deepEqual(calls[calls.length - 1][0], { tags: ['ok'] });
+    expect(res.pushedCount).toBe(1);
+    expect(calls[calls.length - 1][0]).toEqual({ tags: ['ok'] });
     // Both bad elements went in the same round: one retry, not two.
-    assert.equal(res.attemptCount, 2);
+    expect(res.attemptCount).toBe(2);
 });
 
 test('strips an unknown property reported at the root', async () => {
@@ -573,8 +570,8 @@ test('strips an unknown property reported at the root', async () => {
             : null;
     const { pushFn, calls } = makeMockPush(validate);
     const res = await pushDataWithSchemaRepair(pushFn, [{ name: 'A', junk: 1 }]);
-    assert.equal(res.pushedCount, 1);
-    assert.deepEqual(calls[calls.length - 1][0], { name: 'A' });
+    expect(res.pushedCount).toBe(1);
+    expect(calls[calls.length - 1][0]).toEqual({ name: 'A' });
 });
 
 test('strips an unknown property nested inside the item', async () => {
@@ -594,8 +591,8 @@ test('strips an unknown property nested inside the item', async () => {
     };
     const { pushFn, calls } = makeMockPush(validate);
     const res = await pushDataWithSchemaRepair(pushFn, [{ meta: { source: 'web', junk: 1 } }]);
-    assert.equal(res.pushedCount, 1);
-    assert.deepEqual(calls[calls.length - 1][0], { meta: { source: 'web' } });
+    expect(res.pushedCount).toBe(1);
+    expect(calls[calls.length - 1][0]).toEqual({ meta: { source: 'web' } });
 });
 
 test('applies every kind of error reported for an item in one round', async () => {
@@ -622,11 +619,11 @@ test('applies every kind of error reported for an item in one round', async () =
     };
     const { pushFn, calls } = makeMockPush(validate);
     const res = await pushDataWithSchemaRepair(pushFn, [{ junk: 1, age: 'old' }]);
-    assert.equal(res.pushedCount, 1);
+    expect(res.pushedCount).toBe(1);
     // Round 1 handled all three; round 2 only had to upgrade the placeholder.
-    assert.deepEqual(calls[1][0], { name: null });
-    assert.deepEqual(calls[calls.length - 1][0], { name: '' });
-    assert.equal(res.attemptCount, 3);
+    expect(calls[1][0]).toEqual({ name: null });
+    expect(calls[calls.length - 1][0]).toEqual({ name: '' });
+    expect(res.attemptCount).toBe(3);
 });
 
 test('repairs deeper paths and higher indices before the ones that would shift them', async () => {
@@ -653,10 +650,10 @@ test('repairs deeper paths and higher indices before the ones that would shift t
     };
     const { pushFn, calls } = makeMockPush(validate);
     const res = await pushDataWithSchemaRepair(pushFn, [{ rows: [{ bad: true }, { id: 1 }, { id: 2, name: 5 }] }]);
-    assert.equal(res.pushedCount, 1);
-    assert.deepEqual(calls[calls.length - 1][0], { rows: [{ id: 1 }, { id: 2 }] });
+    expect(res.pushedCount).toBe(1);
+    expect(calls[calls.length - 1][0]).toEqual({ rows: [{ id: 1 }, { id: 2 }] });
     // One retry, not two: both repairs landed in the same round.
-    assert.equal(res.attemptCount, 2);
+    expect(res.attemptCount).toBe(2);
 });
 
 test('placeholder paths survive JSON Pointer escaping', async () => {
@@ -675,11 +672,11 @@ test('placeholder paths survive JSON Pointer escaping', async () => {
     const { pushFn, calls } = makeMockPush(validate);
     const lines = await captureLogs(async () => {
         const res = await pushDataWithSchemaRepair(pushFn, [{ id: 1 }]);
-        assert.equal(res.pushedCount, 1);
-        assert.equal(res.attemptCount, 3);
+        expect(res.pushedCount).toBe(1);
+        expect(res.attemptCount).toBe(3);
     });
-    assert.deepEqual(calls[calls.length - 1][0], { id: 1, 'a/b': '' });
-    assert.ok(lines[0].includes('/a~1b (required)'), lines[0]);
+    expect(calls[calls.length - 1][0]).toEqual({ id: 1, 'a/b': '' });
+    expect(lines[0].includes('/a~1b (required)'), lines[0]).toBe(true);
 });
 
 test('per-item state follows its item when a lower position is dropped', async () => {
@@ -698,11 +695,11 @@ test('per-item state follows its item when a lower position is dropped', async (
     };
     const { pushFn, calls } = makeMockPush(validate);
     const res = await pushDataWithSchemaRepair(pushFn, [{ kill: true }, { id: 7 }]);
-    assert.equal(res.pushedCount, 1);
-    assert.equal(res.droppedItems.length, 1);
-    assert.deepEqual(res.droppedItems[0].item, { kill: true });
-    assert.deepEqual(calls[calls.length - 1], [{ id: 7, name: '' }]);
-    assert.equal(res.attemptCount, 3);
+    expect(res.pushedCount).toBe(1);
+    expect(res.droppedItems.length).toBe(1);
+    expect(res.droppedItems[0].item).toEqual({ kill: true });
+    expect(calls[calls.length - 1]).toEqual([{ id: 7, name: '' }]);
+    expect(res.attemptCount).toBe(3);
 });
 
 test('a dropped item reports the caller original, not the half-cleaned copy', async () => {
@@ -714,9 +711,9 @@ test('a dropped item reports the caller original, not the half-cleaned copy', as
             : [{ instancePath: '', keyword: 'type', params: { type: 'object' }, message: 'x' }];
     const { pushFn } = makeMockPush(validate);
     const res = await pushDataWithSchemaRepair(pushFn, [{ name: 'x', age: 'old' }]);
-    assert.equal(res.pushedCount, 0);
-    assert.deepEqual(res.droppedItems[0].item, { name: 'x', age: 'old' });
-    assert.equal(res.attemptCount, 2);
+    expect(res.pushedCount).toBe(0);
+    expect(res.droppedItems[0].item).toEqual({ name: 'x', age: 'old' });
+    expect(res.attemptCount).toBe(2);
 });
 
 test('several items dropped in one round keep the surviving positions straight', async () => {
@@ -726,14 +723,11 @@ test('several items dropped in one round keep the surviving positions straight',
             : null;
     const { pushFn, calls } = makeMockPush(validate);
     const res = await pushDataWithSchemaRepair(pushFn, [{ keep: 1 }, { bad: 1 }, { keep: 2 }, { bad: 2 }]);
-    assert.equal(res.pushedCount, 2);
+    expect(res.pushedCount).toBe(2);
     // Dropped highest-position-first, so the splices never shift a position
     // that's still to be processed.
-    assert.deepEqual(
-        res.droppedItems.map((d) => d.item),
-        [{ bad: 2 }, { bad: 1 }],
-    );
-    assert.deepEqual(calls[1], [{ keep: 1 }, { keep: 2 }]);
+    expect(res.droppedItems.map((d) => d.item)).toEqual([{ bad: 2 }, { bad: 1 }]);
+    expect(calls[1]).toEqual([{ keep: 1 }, { keep: 2 }]);
 });
 
 test('an item that is not an object is dropped instead of retried forever', async () => {
@@ -752,9 +746,9 @@ test('an item that is not an object is dropped instead of retried forever', asyn
         ]);
     };
     const res = await pushDataWithSchemaRepair(pushFn, ['not an object'], { maxAttempts: 5 });
-    assert.equal(calls, 1);
-    assert.equal(res.attemptCount, 1);
-    assert.deepEqual(res.droppedItems, [{ item: 'not an object', errors: res.droppedItems[0].errors }]);
+    expect(calls).toBe(1);
+    expect(res.attemptCount).toBe(1);
+    expect(res.droppedItems).toEqual([{ item: 'not an object', errors: res.droppedItems[0].errors }]);
 });
 
 test('an invalid item the API gave no errors for is dropped, not looped on', async () => {
@@ -764,9 +758,9 @@ test('an invalid item the API gave no errors for is dropped, not looped on', asy
         throw fakeSchemaError([{ itemPosition: 0, validationErrors: [] }]);
     };
     const res = await pushDataWithSchemaRepair(pushFn, [{ a: 1 }], { maxAttempts: 5 });
-    assert.equal(calls, 1);
-    assert.equal(res.droppedItems.length, 1);
-    assert.deepEqual(res.droppedItems[0].errors, []);
+    expect(calls).toBe(1);
+    expect(res.droppedItems.length).toBe(1);
+    expect(res.droppedItems[0].errors).toEqual([]);
 });
 
 test('non-schema error is rethrown', async () => {
@@ -775,7 +769,7 @@ test('non-schema error is rethrown', async () => {
         err.statusCode = 500;
         throw err;
     };
-    await assert.rejects(async () => pushDataWithSchemaRepair(pushFn, [{ x: 1 }]), /boom/);
+    await expect(pushDataWithSchemaRepair(pushFn, [{ x: 1 }])).rejects.toThrow(/boom/);
 });
 
 test('empty array input: returns immediately (but pushFn is still called once)', async () => {
@@ -784,11 +778,11 @@ test('empty array input: returns immediately (but pushFn is still called once)',
         called++;
     };
     const res = await pushDataWithSchemaRepair(pushFn, []);
-    assert.equal(res.pushedCount, 0);
-    assert.equal(res.attemptCount, 1);
+    expect(res.pushedCount).toBe(0);
+    expect(res.attemptCount).toBe(1);
     // Happy path goes through pushFn once even on []; this is intentional —
     // the wrapper doesn't second-guess what `pushFn([])` means for the caller.
-    assert.equal(called, 1);
+    expect(called).toBe(1);
 });
 
 test('original input array is not mutated', async () => {
@@ -798,25 +792,25 @@ test('original input array is not mutated', async () => {
     const original: Item[] = [{ name: 'A' }, { name: 'B', bad: true }];
     const snapshot = structuredClone(original);
     await pushDataWithSchemaRepair(pushFn, original);
-    assert.deepEqual(original, snapshot);
+    expect(original).toEqual(snapshot);
 });
 
 test('gives up after maxAttempts with remaining items still failing', async () => {
     const { pushFn } = makeMockPush(neverValid);
     const res = await pushDataWithSchemaRepair(pushFn, [{ a: 1, b: 2, c: 3, d: 4 }], { maxAttempts: 3 });
-    assert.equal(res.pushedCount, 0);
-    assert.equal(res.droppedItems.length, 1);
-    assert.equal(res.attemptCount, 3);
-    assert.equal(res.pushResult, undefined);
+    expect(res.pushedCount).toBe(0);
+    expect(res.droppedItems.length).toBe(1);
+    expect(res.attemptCount).toBe(3);
+    expect(res.pushResult).toBeUndefined();
 });
 
 test('give-up drop reports the last validation errors, not an empty array', async () => {
     const { pushFn } = makeMockPush(neverValid);
     const res = await pushDataWithSchemaRepair(pushFn, [{ a: 1, b: 2, c: 3, d: 4 }], { maxAttempts: 3 });
-    assert.equal(res.droppedItems.length, 1);
+    expect(res.droppedItems.length).toBe(1);
     // /a went on attempt 1 and /b on attempt 2, so /c is what was still
     // broken when the cap hit.
-    assert.deepEqual(res.droppedItems[0].errors, [
+    expect(res.droppedItems[0].errors).toEqual([
         { instancePath: '/c', keyword: 'type', params: { type: 'string' }, message: 'never-valid' },
     ]);
 });
@@ -829,12 +823,12 @@ test('hitting the cap does not throw away the items that were always valid', asy
     const res = await pushDataWithSchemaRepair(pushFn, [{ ok: 1 }, { a: 1, b: 2, c: 3, d: 4 }, { ok: 2 }], {
         maxAttempts: 3,
     });
-    assert.equal(res.pushedCount, 2);
-    assert.equal(res.droppedItems.length, 1);
-    assert.deepEqual(res.droppedItems[0].item, { a: 1, b: 2, c: 3, d: 4 });
+    expect(res.pushedCount).toBe(2);
+    expect(res.droppedItems.length).toBe(1);
+    expect(res.droppedItems[0].item).toEqual({ a: 1, b: 2, c: 3, d: 4 });
     // Three repair attempts plus the final push of the survivors.
-    assert.equal(res.attemptCount, 4);
-    assert.deepEqual(calls[3], [{ ok: 1 }, { ok: 2 }]);
+    expect(res.attemptCount).toBe(4);
+    expect(calls[3]).toEqual([{ ok: 1 }, { ok: 2 }]);
 });
 
 test('item whose errors are all unactionable is dropped instead of burning attempts', async () => {
@@ -852,8 +846,8 @@ test('item whose errors are all unactionable is dropped instead of burning attem
             ),
         );
     const res = await pushDataWithSchemaRepair(pushFn, [{ name: 'X' }], { maxAttempts: 5 });
-    assert.equal(res.droppedItems.length, 1);
-    assert.equal(res.attemptCount, 1);
+    expect(res.droppedItems.length).toBe(1);
+    expect(res.attemptCount).toBe(1);
 });
 
 test('the salvage push supplies the pushResult', async () => {
@@ -866,9 +860,9 @@ test('the salvage push supplies the pushResult', async () => {
         return `stored ${batch.length}`;
     };
     const res = await pushDataWithSchemaRepair(pushFn, [{ ok: 1 }, { a: 1, b: 2, c: 3, d: 4 }], { maxAttempts: 3 });
-    assert.equal(res.pushResult, 'stored 1');
-    assert.equal(res.pushedCount, 1);
-    assert.equal(res.attemptCount, 4);
+    expect(res.pushResult).toBe('stored 1');
+    expect(res.pushedCount).toBe(1);
+    expect(res.attemptCount).toBe(4);
 });
 
 test('when even the salvage push is rejected, nothing counts as pushed', async () => {
@@ -889,19 +883,18 @@ test('when even the salvage push is rejected, nothing counts as pushed', async (
     };
     const lines = await captureLogs(async () => {
         const res = await pushDataWithSchemaRepair(pushFn, [{ ok: 1 }, { a: 1, b: 2, c: 3, d: 4 }], { maxAttempts: 3 });
-        assert.equal(res.pushedCount, 0);
-        assert.equal(res.attemptCount, 4);
-        assert.equal(res.pushResult, undefined);
+        expect(res.pushedCount).toBe(0);
+        expect(res.attemptCount).toBe(4);
+        expect(res.pushResult).toBeUndefined();
         // The incurable item went first, at the cap; the survivor went with
         // the failed salvage push, carrying the error that killed it.
-        assert.deepEqual(res.droppedItems[0].item, { a: 1, b: 2, c: 3, d: 4 });
-        assert.deepEqual(res.droppedItems[1].item, { ok: 1 });
-        assert.deepEqual(res.droppedItems[1].errors, [
+        expect(res.droppedItems[0].item).toEqual({ a: 1, b: 2, c: 3, d: 4 });
+        expect(res.droppedItems[1].item).toEqual({ ok: 1 });
+        expect(res.droppedItems[1].errors).toEqual([
             { instancePath: '/ok', keyword: 'type', params: { type: 'string' }, message: 'late' },
         ]);
     });
-    assert.equal(
-        lines[lines.length - 1],
+    expect(lines[lines.length - 1]).toBe(
         'pushDataWithSchemaRepair: final push of 1 item(s) was rejected too; dropping them.',
     );
 });
@@ -913,10 +906,10 @@ test('maxAttempts: 1 leaves no room to repair but still gets the valid items in'
             : null;
     const { pushFn, calls } = makeMockPush(validate);
     const res = await pushDataWithSchemaRepair(pushFn, [{ ok: 1 }, { bad: 1 }], { maxAttempts: 1 });
-    assert.equal(res.pushedCount, 1);
-    assert.equal(res.droppedItems.length, 1);
-    assert.equal(res.attemptCount, 2);
-    assert.deepEqual(calls[1], [{ ok: 1 }]);
+    expect(res.pushedCount).toBe(1);
+    expect(res.droppedItems.length).toBe(1);
+    expect(res.attemptCount).toBe(2);
+    expect(calls[1]).toEqual([{ ok: 1 }]);
 });
 
 test('a non-schema error from a retry push is rethrown', async () => {
@@ -935,7 +928,7 @@ test('a non-schema error from a retry push is rethrown', async () => {
         }
         throw new Error('boom on retry');
     };
-    await assert.rejects(async () => pushDataWithSchemaRepair(pushFn, [{ age: 'old' }]), /boom on retry/);
+    await expect(pushDataWithSchemaRepair(pushFn, [{ age: 'old' }])).rejects.toThrow(/boom on retry/);
 });
 
 test('a non-schema error from the salvage push is rethrown', async () => {
@@ -952,8 +945,7 @@ test('a non-schema error from the salvage push is rethrown', async () => {
         }
         throw new Error('boom on salvage');
     };
-    await assert.rejects(
-        async () => pushDataWithSchemaRepair(pushFn, [{ ok: 1 }, { bad: 1 }], { maxAttempts: 1 }),
+    await expect(pushDataWithSchemaRepair(pushFn, [{ ok: 1 }, { bad: 1 }], { maxAttempts: 1 })).rejects.toThrow(
         /boom on salvage/,
     );
 });
@@ -972,8 +964,8 @@ test('maxAttempts <= 0 is clamped to 1 (attempts always matches real pushFn call
         ]);
     };
     const res = await pushDataWithSchemaRepair(pushFn, [{ age: 30 }], { maxAttempts: 0 });
-    assert.equal(calls, 1);
-    assert.equal(res.attemptCount, 1);
+    expect(calls).toBe(1);
+    expect(res.attemptCount).toBe(1);
 });
 
 test('round log names the offending fields, deduped across items', async () => {
@@ -1002,14 +994,13 @@ test('round log names the offending fields, deduped across items', async () => {
             { name: 'a', age: 'old', tags: [1, 'ok'] },
             { name: 'b', age: 'x', tags: ['ok', 2] },
         ]);
-        assert.equal(res.pushedCount, 2);
+        expect(res.pushedCount).toBe(2);
     });
-    assert.equal(lines.length, 1);
+    expect(lines.length).toBe(1);
     // Both items hit /age, and the bad array elements (at different indices)
     // collapse into one `/tags/[]` entry — the log reports fields, not
     // occurrences.
-    assert.equal(
-        lines[0],
+    expect(lines[0]).toBe(
         'pushDataWithSchemaRepair: schema validation failed on attempt 1: 2 invalid item(s); ' +
             'repaired fields: /age (type), /tags/[] (type); retrying with 2 item(s).',
     );
@@ -1024,7 +1015,7 @@ test('round log reports a missing required field under its own path', async () =
     const lines = await captureLogs(async () => {
         await pushDataWithSchemaRepair(pushFn, [{ age: 1 }]);
     });
-    assert.ok(lines[0].includes('repaired fields: /name (required)'), lines[0]);
+    expect(lines[0].includes('repaired fields: /name (required)'), lines[0]).toBe(true);
 });
 
 test('round log separates dropped items and their unfixable fields', async () => {
@@ -1035,10 +1026,9 @@ test('round log separates dropped items and their unfixable fields', async () =>
     ]);
     const lines = await captureLogs(async () => {
         const res = await pushDataWithSchemaRepair(pushFn, [{ age: 1 }]);
-        assert.equal(res.droppedItems.length, 1);
+        expect(res.droppedItems.length).toBe(1);
     });
-    assert.equal(
-        lines[0],
+    expect(lines[0]).toBe(
         'pushDataWithSchemaRepair: schema validation failed on attempt 1: 1 invalid item(s); ' +
             'dropped 1 item(s) on unfixable fields: (item root) (type); nothing left to retry.',
     );
@@ -1049,9 +1039,8 @@ test('give-up log names the fields that are still failing and what it salvages',
     const lines = await captureLogs(async () => {
         await pushDataWithSchemaRepair(pushFn, [{ ok: 1 }, { a: 1, b: 2, c: 3, d: 4 }], { maxAttempts: 3 });
     });
-    assert.ok(lines[2].endsWith('attempt cap reached with 2 item(s) left.'), lines[2]);
-    assert.equal(
-        lines[3],
+    expect(lines[2].endsWith('attempt cap reached with 2 item(s) left.'), lines[2]).toBe(true);
+    expect(lines[3]).toBe(
         'pushDataWithSchemaRepair: gave up after 3 attempts; dropped 1 item(s) still failing on fields: /c (type); ' +
             'pushing the 1 valid item(s) left.',
     );
@@ -1071,11 +1060,11 @@ test('field list in the log is capped, with the overflow counted', async () => {
     for (const f of badFields) item[f] = 1;
     const lines = await captureLogs(async () => {
         const res = await pushDataWithSchemaRepair(pushFn, [item]);
-        assert.equal(res.pushedCount, 1);
+        expect(res.pushedCount).toBe(1);
     });
-    assert.ok(lines[0].includes('/f00 (type), /f01 (type)'), lines[0]);
-    assert.ok(lines[0].includes('/f19 (type) (+5 more)'), lines[0]);
-    assert.ok(!lines[0].includes('/f20 (type)'), lines[0]);
+    expect(lines[0].includes('/f00 (type), /f01 (type)'), lines[0]).toBe(true);
+    expect(lines[0].includes('/f19 (type) (+5 more)'), lines[0]).toBe(true);
+    expect(!lines[0].includes('/f20 (type)'), lines[0]).toBe(true);
 });
 
 test('attemptCount always matches the number of pushFn calls', async () => {
@@ -1110,7 +1099,7 @@ test('attemptCount always matches the number of pushFn calls', async () => {
     for (const scenario of scenarios) {
         const { pushFn, calls } = makeMockPush(scenario.validate);
         const res = await pushDataWithSchemaRepair(pushFn, scenario.items, scenario.options);
-        assert.equal(res.attemptCount, calls.length, scenario.label);
+        expect(res.attemptCount, scenario.label).toBe(calls.length);
     }
 });
 
@@ -1161,26 +1150,23 @@ test('mixed batch: keeps the good, repairs the fixable, drops the hopeless', asy
     const { pushFn, calls } = makeMockPush(validate);
     const res = await pushDataWithSchemaRepair(pushFn, items);
 
-    assert.equal(res.pushedCount, 3);
-    assert.deepEqual(calls[calls.length - 1], [
+    expect(res.pushedCount).toBe(3);
+    expect(calls[calls.length - 1]).toEqual([
         { name: 'clean', age: 30, role: 'admin' },
         { name: 'strip', role: 'user' },
         { age: 5, role: 'user', name: '' },
     ]);
     // Both hopeless items are reported exactly as the caller passed them —
     // 'bad role' had its role stripped and re-placeholdered along the way.
-    assert.deepEqual(
-        res.droppedItems.map((d) => d.item),
-        [
-            { name: 'no role', age: 1 },
-            { name: 'bad role', age: 2, role: 'wizard' },
-        ],
-    );
-    assert.deepEqual(res.droppedItems[0].errors, [
+    expect(res.droppedItems.map((d) => d.item)).toEqual([
+        { name: 'no role', age: 1 },
+        { name: 'bad role', age: 2, role: 'wizard' },
+    ]);
+    expect(res.droppedItems[0].errors).toEqual([
         { instancePath: '/role', keyword: 'enum', params: { allowedValues: roles }, message: 'x' },
     ]);
-    assert.equal(res.attemptCount, calls.length);
-    assert.deepEqual(items, snapshot);
+    expect(res.attemptCount).toBe(calls.length);
+    expect(items).toEqual(snapshot);
 });
 
 test('log labels collapse array indices at every depth', async () => {
@@ -1197,7 +1183,7 @@ test('log labels collapse array indices at every depth', async () => {
     const lines = await captureLogs(async () => {
         await pushDataWithSchemaRepair(pushFn, [{ rows: [] }], { maxAttempts: 2 });
     });
-    assert.ok(lines[0].includes('/rows/[]/tags/[] (type)'), lines[0]);
+    expect(lines[0].includes('/rows/[]/tags/[] (type)'), lines[0]).toBe(true);
 });
 
 test('log names an unknown property, not the object it was found on', async () => {
@@ -1219,7 +1205,7 @@ test('log names an unknown property, not the object it was found on', async () =
     const lines = await captureLogs(async () => {
         await pushDataWithSchemaRepair(pushFn, [{ meta: {} }], { maxAttempts: 2 });
     });
-    assert.ok(lines[0].includes('/meta/junk (additionalProperties)'), lines[0]);
+    expect(lines[0].includes('/meta/junk (additionalProperties)'), lines[0]).toBe(true);
 });
 
 test('out-of-range itemPosition is logged once per occurrence', async () => {
@@ -1236,13 +1222,11 @@ test('out-of-range itemPosition is logged once per occurrence', async () => {
     const lines = await captureLogs(async () => {
         await pushDataWithSchemaRepair(pushFn, [{ age: 30 }], { maxAttempts: 1 });
     });
-    assert.equal(
-        lines[0],
+    expect(lines[0]).toBe(
         'pushDataWithSchemaRepair: ignoring out-of-range itemPosition 5 in validation error response.',
     );
     // Nothing in range failed, so the round has no fields to report.
-    assert.equal(
-        lines[1],
+    expect(lines[1]).toBe(
         'pushDataWithSchemaRepair: schema validation failed on attempt 1: 1 invalid item(s); attempt cap reached with 1 item(s) left.',
     );
 });
@@ -1259,7 +1243,7 @@ test('out-of-range itemPosition in the error payload is ignored, not a crash', a
         ]);
     };
     const res = await pushDataWithSchemaRepair(pushFn, [{ age: 30 }], { maxAttempts: 2 });
-    assert.equal(res.pushedCount, 0);
-    assert.equal(res.droppedItems.length, 1);
-    assert.deepEqual(res.droppedItems[0].item, { age: 30 });
+    expect(res.pushedCount).toBe(0);
+    expect(res.droppedItems.length).toBe(1);
+    expect(res.droppedItems[0].item).toEqual({ age: 30 });
 });

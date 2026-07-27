@@ -138,8 +138,7 @@ Highlights:
 
 - `scripts/check-pushdata.mjs` greps `src/` and `test/` for any
   `.pushData(` call expression and fails if one exists.
-- The package is consumed as compiled output (`dist/`), so `npm test`
-  builds via `tsc` first, then runs the compiled suite under `node --test`.
+- `npm test` runs the whole `test/` tree with Vitest, straight from source.
 
 ## Layout
 
@@ -147,10 +146,11 @@ Highlights:
 .
 ├── index.ts                               # package entry point, re-exports src/
 ├── src/pushDataWithSchemaRepair.ts        # the library
-├── test/pushDataWithSchemaRepair.test.ts  # node:test suite
+├── test/pushDataWithSchemaRepair.test.ts  # Vitest suite
 ├── scripts/
 │   ├── check-pushdata.mjs                 # CI guard against direct .pushData() calls
 │   └── probe-errors.mjs                   # reference: re-derive the API error shape
 ├── tsconfig.json
+├── vitest.config.ts
 └── package.json
 ```
