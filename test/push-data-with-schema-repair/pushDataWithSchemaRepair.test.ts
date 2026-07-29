@@ -7,7 +7,7 @@ import {
     pushDataWithSchemaRepair,
     type PushFn,
     type ValidationError,
-} from '../src/pushDataWithSchemaRepair.js';
+} from '../../src/push-data-with-schema-repair/index.js';
 
 // Shape of an item used across tests.
 interface Item {

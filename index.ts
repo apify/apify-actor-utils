@@ -1,8 +1,8 @@
-export { pushDataWithSchemaRepair, isSchemaValidationError } from './src/pushDataWithSchemaRepair.js';
+export { pushDataWithSchemaRepair, isSchemaValidationError } from './src/push-data-with-schema-repair/index.js';
 export type {
     ValidationError,
     DroppedItem,
     PushDataWithSchemaRepairResult,
     PushDataWithSchemaRepairOptions,
     PushFn,
-} from './src/pushDataWithSchemaRepair.js';
+} from './src/push-data-with-schema-repair/index.js';
