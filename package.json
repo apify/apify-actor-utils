@@ -17,6 +17,10 @@
             "types": "./dist/index.d.ts",
             "default": "./dist/index.js"
         },
+        "./push-data-with-schema-repair": {
+            "types": "./dist/src/push-data-with-schema-repair/index.d.ts",
+            "default": "./dist/src/push-data-with-schema-repair/index.js"
+        },
         "./qc-logger": {
             "types": "./dist/src/qc-logger/index.d.ts",
             "default": "./dist/src/qc-logger/index.js"
