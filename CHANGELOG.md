@@ -2,6 +2,15 @@
 
 All notable changes to this project will be documented in this file.
 
+<!-- git-cliff-unreleased-start -->
+## 0.1.8 - **not yet released**
+
+### 🚀 Features
+
+- **non-empty-list:** Non empty list and namespacing of pushDataWithSchemaRepair ([#11](https://github.com/apify/apify-actor-utils/pull/11)) ([b7c15a3](https://github.com/apify/apify-actor-utils/commit/b7c15a3ae6ce205824d516b8c01cc44b3df272b1)) by [@JuanGalilea](https://github.com/JuanGalilea)
+
+
+<!-- git-cliff-unreleased-end -->
 ## [0.1.7](https://github.com/apify/apify-actor-utils/releases/tag/v0.1.7) (2026-07-27)
 
 ### 🐛 Bug Fixes
