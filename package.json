@@ -32,6 +32,10 @@
         "./gteam-internal": {
             "types": "./dist/src/gteam-internal/index.d.ts",
             "default": "./dist/src/gteam-internal/index.js"
+        },
+        "./zod": {
+            "types": "./dist/src/zod/index.d.ts",
+            "default": "./dist/src/zod/index.js"
         }
     },
     "files": [
@@ -51,6 +55,9 @@
             ],
             "gteam-internal": [
                 "dist/src/gteam-internal/index.d.ts"
+            ],
+            "zod": [
+                "dist/src/zod/index.d.ts"
             ]
         }
     },
@@ -89,19 +96,24 @@
         "prettier": "^3.9.4",
         "typescript": "^6.0.3",
         "typescript-eslint": "^8.62.1",
-        "vitest": "^4.0.18"
+        "vitest": "^4.0.18",
+        "zod": "^4.6.2"
     },
     "license": "ISC",
     "peerDependencies": {
         "@apify/log": "^2",
         "apify": "^3",
-        "apify-client": "^2"
+        "apify-client": "^2",
+        "zod": "^4"
     },
     "peerDependenciesMeta": {
         "apify": {
             "optional": true
         },
         "apify-client": {
+            "optional": true
+        },
+        "zod": {
             "optional": true
         }
     }
