@@ -17,6 +17,8 @@ export type PartialSafeParseResult<Schema extends z.ZodType> =
  * - For objects, returns any fields containing at least partially parsed data with nested structures preserved.
  * - For arrays, returns items containing at least partially parsed data.
  * - For primitives, simply returns the error if parsing fails.
+ *
+ * @see `./partial-safe-parse.md` for a more detailed explanation and usage examples.
  */
 export function partialSafeParse<Schema extends z.ZodType>(
     schema: Schema,
