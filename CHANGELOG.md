@@ -2,8 +2,7 @@
 
 All notable changes to this project will be documented in this file.
 
-<!-- git-cliff-unreleased-start -->
-## 0.1.9 - **not yet released**
+## [0.1.9](https://github.com/apify/apify-actor-utils/releases/tag/v0.1.9) (2026-09-22)
 
 ### 🚀 Features
 
@@ -15,7 +14,6 @@ All notable changes to this project will be documented in this file.
 - Add zod partial safe parse ([#15](https://github.com/apify/apify-actor-utils/pull/15)) ([0a70b6f](https://github.com/apify/apify-actor-utils/commit/0a70b6f8166b66ce4f0c5c70ad3b4d8578638064)) by [@Patai5](https://github.com/Patai5)
 
 
-<!-- git-cliff-unreleased-end -->
 ## [0.1.8](https://github.com/apify/apify-actor-utils/releases/tag/v0.1.8) (2026-08-13)
 
 ### 🚀 Features
