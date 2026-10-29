@@ -2,6 +2,15 @@
 
 All notable changes to this project will be documented in this file.
 
+<!-- git-cliff-unreleased-start -->
+## 0.1.10 - **not yet released**
+
+### 🚀 Features
+
+- **branded-types:** Add branded types definition ([#21](https://github.com/apify/apify-actor-utils/pull/21)) ([eea6c89](https://github.com/apify/apify-actor-utils/commit/eea6c89fd797eb633edd3fd8e9cb1e8e2a389957)) by [@JuanGalilea](https://github.com/JuanGalilea)
+
+
+<!-- git-cliff-unreleased-end -->
 ## [0.1.9](https://github.com/apify/apify-actor-utils/releases/tag/v0.1.9) (2026-09-22)
 
 ### 🚀 Features
